@@ -70,6 +70,58 @@ describe("rsvpSummary", () => {
     });
   });
 
+  describe("with a non-finite or fractional count (hardened)", () => {
+    it("treats a NaN count as no RSVPs", () => {
+      expect(rsvpSummary(NaN)).toBe("No RSVPs yet");
+      expect(rsvpSummary(NaN, 10)).toBe("No RSVPs yet");
+    });
+
+    it("treats an Infinity count as no RSVPs", () => {
+      expect(rsvpSummary(Infinity)).toBe("No RSVPs yet");
+      expect(rsvpSummary(Infinity, 10)).toBe("No RSVPs yet");
+    });
+
+    it("treats a -Infinity count as no RSVPs", () => {
+      expect(rsvpSummary(-Infinity)).toBe("No RSVPs yet");
+      expect(rsvpSummary(-Infinity, 10)).toBe("No RSVPs yet");
+    });
+
+    it("floors a fractional count", () => {
+      expect(rsvpSummary(0.5)).toBe("No RSVPs yet");
+      expect(rsvpSummary(0.5, 10)).toBe("No RSVPs yet");
+      expect(rsvpSummary(1.9)).toBe("1 going");
+      expect(rsvpSummary(3.7)).toBe("3 going");
+      expect(rsvpSummary(3.7, 10)).toBe("3 going · 7 spots left");
+      expect(rsvpSummary(10.5, 10)).toBe("Full (10 going)");
+    });
+
+    it("floors a negative fractional count to the empty state", () => {
+      expect(rsvpSummary(-0.5)).toBe("No RSVPs yet");
+    });
+  });
+
+  describe("with a non-finite or fractional capacity (ignored)", () => {
+    it("ignores a NaN capacity", () => {
+      expect(rsvpSummary(3, NaN)).toBe("3 going");
+      expect(rsvpSummary(1, NaN)).toBe("1 going");
+    });
+
+    it("ignores an Infinity capacity", () => {
+      expect(rsvpSummary(3, Infinity)).toBe("3 going");
+    });
+
+    it("ignores a -Infinity capacity", () => {
+      expect(rsvpSummary(3, -Infinity)).toBe("3 going");
+    });
+
+    it("ignores a fractional capacity", () => {
+      expect(rsvpSummary(3, 3.5)).toBe("3 going");
+      expect(rsvpSummary(3, 10.5)).toBe("3 going");
+      expect(rsvpSummary(3, 0.5)).toBe("3 going");
+      expect(rsvpSummary(3, -2.5)).toBe("3 going");
+    });
+  });
+
   it("is pure: repeated calls with the same input return the same string", () => {
     expect(rsvpSummary(4, 9)).toBe(rsvpSummary(4, 9));
     expect(rsvpSummary(0)).toBe(rsvpSummary(0));
