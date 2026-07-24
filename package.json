@@ -1,0 +1,33 @@
+{
+  "name": "mkv2-dryrun3",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "migrate": "node scripts/migrate.mjs",
+    "seed": "node scripts/migrate.mjs --seed",
+    "check:migrations": "node scripts/check-migrations.mjs"
+  },
+  "dependencies": {
+    "next": "^16.1.4",
+    "pg": "^8.13.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
