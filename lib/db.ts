@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 
 // LAZY pool — do NOT construct at module import. An eager `new Pool()` (or reading
 // DATABASE_URL at import time) runs during `next build`, where the var is absent, and
@@ -29,4 +29,31 @@ export async function query<T = Record<string, unknown>>(
 ): Promise<T[]> {
   const res = await getPool().query(text, params as never[]);
   return res.rows as T[];
+}
+
+/**
+ * Run `fn` inside a single BEGIN/COMMIT on one checked-out client. query() above is a
+ * one-statement-per-connection helper, so anything needing statements to share a
+ * transaction (e.g. a transaction-scoped advisory lock) must go through here.
+ * Rolls back and rethrows on error; always releases the client.
+ */
+export async function withTransaction<T>(
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query("begin");
+    const result = await fn(client);
+    await client.query("commit");
+    return result;
+  } catch (error) {
+    try {
+      await client.query("rollback");
+    } catch {
+      // The connection is already broken; the original error is the useful one.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }

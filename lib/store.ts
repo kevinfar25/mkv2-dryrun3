@@ -14,29 +14,45 @@ export type EventRow = {
 // cannot silently change what callers receive.
 const COLUMNS = "id, title, starts_at, location, created_at";
 
+// What node-postgres ACTUALLY hands back: timestamptz is parsed into a JS Date, not a
+// string. query<T>() is an unchecked assertion, so the row shape has to be normalized
+// here for EventRow's declared `string` timestamps to be true at runtime.
+type RawEventRow = Omit<EventRow, "starts_at" | "created_at"> & {
+  starts_at: Date | string;
+  created_at: Date | string;
+};
+
+const toIso = (value: Date | string): string =>
+  value instanceof Date ? value.toISOString() : value;
+
+export function normalizeEventRow(row: RawEventRow): EventRow {
+  return { ...row, starts_at: toIso(row.starts_at), created_at: toIso(row.created_at) };
+}
+
 export async function createEvent(input: EventInput): Promise<EventRow> {
-  const rows = await query<EventRow>(
+  const rows = await query<RawEventRow>(
     `insert into events (title, starts_at, location)
      values ($1, $2, $3)
      returning ${COLUMNS}`,
     [input.title, input.startsAt, input.location],
   );
-  return rows[0];
+  return normalizeEventRow(rows[0]);
 }
 
 /** Newest first. Single query — no per-row fan-out. */
 export async function listEvents(): Promise<EventRow[]> {
-  return query<EventRow>(
+  const rows = await query<RawEventRow>(
     `select ${COLUMNS} from events order by created_at desc, id desc`,
   );
+  return rows.map(normalizeEventRow);
 }
 
 /** null (not a throw) when the id does not exist — callers map that to notFound(). */
 export async function getEvent(id: number): Promise<EventRow | null> {
   if (!Number.isInteger(id)) return null;
-  const rows = await query<EventRow>(
+  const rows = await query<RawEventRow>(
     `select ${COLUMNS} from events where id = $1`,
     [id],
   );
-  return rows[0] ?? null;
+  return rows[0] ? normalizeEventRow(rows[0]) : null;
 }
