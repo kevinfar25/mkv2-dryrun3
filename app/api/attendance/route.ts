@@ -42,9 +42,13 @@ type AttendanceReport = {
 
 // ── OLD-SCHEMA SAFETY ──────────────────────────────────────────────────────
 //
-// 20260727010000_sessions_checkin.sql is NOT applied when this code deploys — the atomic
-// runner lives inside the deployed app, so this build serves traffic against a database
-// with no `sessions` table and no attendees.session_id / attendees.checked_in_at. Each
+// This was written when 20260727010000_sessions_checkin.sql had NOT yet been applied: the
+// atomic runner lives inside the deployed app, so a build can serve traffic against a
+// database that lacks `sessions` and attendees.session_id / attendees.checked_in_at. That
+// migration is now applied (as is the 20260727020000 reconciliation), so the degraded path
+// is no longer the live one — but it is KEPT, deliberately, because the deploy-order
+// inversion is permanent here: any future expand migration reopens exactly this window, and
+// lib/store.ts's listSessions / listAttendees guard themselves the same way. Each
 // read below is therefore wrapped INDIVIDUALLY and degrades to a well-formed ZERO value on
 // 42P01 (missing table) / 42703 (missing column), exactly as lib/store.ts's listSessions
 // and listAttendees already do. A missing sessions table must not cost us the attendee
@@ -55,8 +59,12 @@ type AttendanceReport = {
 // ── ATTENDEE BUCKETING ─────────────────────────────────────────────────────
 //
 // attendees.session_id is NULLABLE BY DESIGN and session-less attendees are LEGAL, not a
-// bug: every RSVP written by a build older than X2 has session_id NULL, and that is
-// accepted. So the two aggregates below count different things on purpose:
+// bug. Two distinct sources of them: RSVPs written by a build older than X2 (those have
+// since been attributed to their event's legacy session by the 20260727020000
+// reconciliation), and — permanently — attendees of an event created AFTER 20260727010000
+// applied, which has no session for them to belong to at all. The second case is live in
+// production today, so this is not a transitional concern that the reconciliation retired.
+// So the two aggregates below count different things on purpose:
 //   · per-EVENT counts group attendees by event_id — session-less attendees ARE included,
 //     both in each event's attendeeCount/checkedInCount and in the totals;
 //   · per-SESSION counts join a.session_id = s.id — session-less attendees belong to no
