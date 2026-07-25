@@ -73,12 +73,20 @@ function fakeDb(state: { sessions: FakeSession[]; attendees: FakeAttendee[] }) {
       const found = session(params[0], params[1]);
       return found ? [{ id: found.id }] : [];
     }
+    // attendeeSession — the failure-path read that separates 409 from 404.
+    if (/select session_id from attendees/.test(sql)) {
+      const row = attendee(params[0], params[1]);
+      return row ? [{ session_id: row.session_id }] : [];
+    }
     // checkIn — note the coalesce: the timestamp is written ONCE and never moved.
     if (/coalesce\(a\.checked_in_at, now\(\)\)/.test(sql)) {
       const [eventId, sessionId, name] = params;
       if (!session(sessionId, eventId)) return [];
       const row = attendee(eventId, name);
       if (!row) return [];
+      // `and (a.session_id is null or a.session_id = s.id)` — an attendee already on another
+      // session of this event matches NO row, so the UPDATE cannot reassign them.
+      if (row.session_id !== null && row.session_id !== sessionId) return [];
       row.session_id = sessionId as number;
       row.checked_in_at = row.checked_in_at ?? now();
       return [{ name: row.name, checked_in_at: row.checked_in_at }];
@@ -190,6 +198,39 @@ describe("store: checkIn / undoCheckIn / countCheckedIn", () => {
     expect(state.attendees[0].session_id).toBe(5);
   });
 
+  it("NEVER reassigns an attendee already on another session of the same event", async () => {
+    const state = fakeDb({
+      sessions: [{ id: 5, event_id: 1 }, { id: 6, event_id: 1 }],
+      attendees: [{ event_id: 1, name: "Ada", session_id: 5, checked_in_at: null }],
+    });
+
+    // Ada RSVPed for session 5; her badge is scanned at session 6's door.
+    await expect(checkIn(1, 6, "Ada")).resolves.toBeNull();
+    // Her RSVP stays on 5. The DELETE path clears only checked_in_at, so a silent move here
+    // would be permanent and unrecoverable.
+    expect(state.attendees[0].session_id).toBe(5);
+    expect(state.attendees[0].checked_in_at).toBeNull();
+    await expect(countCheckedIn(6)).resolves.toBe(0);
+
+    // ...and the session she IS on still checks her in.
+    await expect(checkIn(1, 5, "Ada")).resolves.toMatchObject({ name: "Ada" });
+    expect(state.attendees[0].session_id).toBe(5);
+  });
+
+  it("guards the reassignment inside the single statement, not with a prior read", async () => {
+    fakeDb({
+      sessions: [{ id: 5, event_id: 1 }],
+      attendees: [{ event_id: 1, name: "Ada", session_id: 5, checked_in_at: null }],
+    });
+    await checkIn(1, 5, "Ada");
+    // ONE query, and the null-only condition is part of the write itself — so two concurrent
+    // scans for two different sessions cannot interleave into "the later one wins".
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0]).toMatch(
+      /\(a\.session_id is null or a\.session_id = s\.id\)/,
+    );
+  });
+
   it("returns null for a session that belongs to a DIFFERENT event", async () => {
     fakeDb({
       sessions: [{ id: 5, event_id: 1 }, { id: 9, event_id: 2 }],
@@ -237,6 +278,16 @@ describe("store: checkIn / undoCheckIn / countCheckedIn", () => {
     await expect(checkIn(1.5, 5, "Ada")).resolves.toBeNull();
     await expect(undoCheckIn(1, Number.NaN, "Ada")).resolves.toBe(false);
     await expect(countCheckedIn(2147483648)).resolves.toBe(0);
+    // Out of int4 range on EITHER id, in BOTH write paths: Postgres would raise 22003 (a 500)
+    // rather than match no rows, so it must never get there.
+    await expect(checkIn(2147483648, 5, "Ada")).resolves.toBeNull();
+    await expect(checkIn(1, 2147483648, "Ada")).resolves.toBeNull();
+    await expect(checkIn(-2147483649, 5, "Ada")).resolves.toBeNull();
+    await expect(checkIn(1, -2147483649, "Ada")).resolves.toBeNull();
+    await expect(undoCheckIn(2147483648, 5, "Ada")).resolves.toBe(false);
+    await expect(undoCheckIn(1, 2147483648, "Ada")).resolves.toBe(false);
+    await expect(undoCheckIn(-2147483649, 5, "Ada")).resolves.toBe(false);
+    await expect(undoCheckIn(1, -2147483649, "Ada")).resolves.toBe(false);
     expect(query).not.toHaveBeenCalled();
   });
 });
@@ -272,6 +323,26 @@ describe("POST/DELETE /api/events/[id]/checkin", () => {
     expect(json.error).toBe("session not found for this event");
     // No Postgres error code leaks to the client.
     expect(JSON.stringify(json)).not.toMatch(/2\d{4}|4[23]\w\d\d/);
+  });
+
+  it("409s — not 200, not a silent move — when scanned at a session they are not on", async () => {
+    const state = fakeDb({
+      sessions: [{ id: 5, event_id: 1 }, { id: 6, event_id: 1 }],
+      attendees: [{ event_id: 1, name: "Ada", session_id: 5, checked_in_at: null }],
+    });
+
+    const res = await checkinRoute.POST(body({ name: "Ada", sessionId: 6 }, "POST"), ctx("1"));
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.error).toMatch(/different session/);
+    expect(json.sessionId).toBe(5);
+    // 404 is reserved for "session does not belong to this event"; this is not that.
+    expect(res.status).not.toBe(404);
+    expect(res.status).not.toBe(500);
+    expect(JSON.stringify(json)).not.toMatch(/2\d{4}|4[23]\w\d\d/);
+    // Nothing was written.
+    expect(state.attendees[0].session_id).toBe(5);
+    expect(state.attendees[0].checked_in_at).toBeNull();
   });
 
   it("404s for an attendee who never RSVPed", async () => {

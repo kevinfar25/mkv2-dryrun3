@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  attendeeSession,
   checkIn,
   countCheckedIn,
   isForeignKeyViolation,
@@ -48,17 +49,41 @@ async function readBody(request: Request): Promise<Body> {
 }
 
 /**
- * Nothing matched the write. That is ALWAYS a 404 — a session that belongs to another
- * event must never surface as a 500 with a Postgres error code in it — but which 404 is
- * worth being honest about, so this asks (only on the failure path) which of the two it was.
+ * Nothing matched the write. Never a 500 with a Postgres error code in it — but WHICH answer
+ * is worth being honest about, so this asks (only on the failure path, never before the
+ * write) what the stored state actually is:
+ *
+ *  - the session is not this event's → 404, the reading the plan reserves for exactly that;
+ *  - nobody of that name RSVPed → 404;
+ *  - they RSVPed for a DIFFERENT session of this event → 409. checkIn deliberately refuses to
+ *    move them, and that is a conflict between the request and stored state, not a missing
+ *    thing: 404 would tell the door staff "no such attendee" when the attendee exists and is
+ *    simply expected elsewhere.
  */
-async function notFound(eventId: number, sessionId: number, inSession: boolean) {
+async function notFound(
+  eventId: number,
+  sessionId: number,
+  name: string,
+  inSession: boolean,
+) {
   const belongs = await sessionBelongsToEvent(eventId, sessionId);
   if (!belongs) {
     return NextResponse.json(
       { error: "session not found for this event" },
       { status: 404 },
     );
+  }
+  if (!inSession) {
+    const assigned = await attendeeSession(eventId, name);
+    if (assigned && assigned.sessionId !== null && assigned.sessionId !== sessionId) {
+      return NextResponse.json(
+        {
+          error: "attendee is registered for a different session of this event",
+          sessionId: assigned.sessionId,
+        },
+        { status: 409 },
+      );
+    }
   }
   return NextResponse.json(
     { error: inSession ? "attendee not found in that session" : "attendee not found" },
@@ -105,7 +130,7 @@ export async function POST(
 
   try {
     const result = await checkIn(eventId, sessionId, name);
-    if (!result) return await notFound(eventId, sessionId, false);
+    if (!result) return await notFound(eventId, sessionId, name, false);
     const checkedInCount = await countCheckedIn(sessionId);
     return NextResponse.json({
       ok: true,
@@ -136,7 +161,7 @@ export async function DELETE(
 
   try {
     const cleared = await undoCheckIn(eventId, sessionId, name);
-    if (!cleared) return await notFound(eventId, sessionId, true);
+    if (!cleared) return await notFound(eventId, sessionId, name, true);
     const checkedInCount = await countCheckedIn(sessionId);
     return NextResponse.json({
       ok: true,

@@ -395,13 +395,47 @@ export async function sessionBelongsToEvent(
 }
 
 /**
+ * The session an attendee of `eventId` is currently assigned to. Like
+ * sessionBelongsToEvent() this is a FAILURE-PATH read only — it tells the route WHY a write
+ * matched nothing (already on another session vs. never RSVPed), and is never used as a
+ * pre-flight guard. `sessionId: null` is the legitimate unassigned case; null means no
+ * attendee of that name. Degrades to null on the pre-migration schema.
+ */
+export async function attendeeSession(
+  eventId: number,
+  name: string,
+): Promise<{ sessionId: number | null } | null> {
+  const trimmed = name.trim();
+  if (!Number.isInteger(eventId) || eventId < INT4_MIN || eventId > INT4_MAX) return null;
+  if (trimmed === "") return null;
+  try {
+    const rows = await query<{ session_id: number | null }>(
+      `select session_id from attendees where event_id = $1 and lower(name) = lower($2)`,
+      [eventId, trimmed],
+    );
+    const row = rows[0];
+    return row ? { sessionId: row.session_id } : null;
+  } catch (error) {
+    if (isUndefinedTable(error) || isUndefinedColumn(error)) return null;
+    throw error;
+  }
+}
+
+/**
  * Mark an attendee of `eventId` as arrived at `sessionId`, and attach them to that session
- * (an attendee who RSVPed before the picker existed carries session_id = null — legal, and
- * a scan at the door is exactly when that becomes known). Name matching is
- * case-insensitive, matching attendees_event_name_uniq.
+ * ONLY when they carry no session yet (an attendee who RSVPed before the picker existed
+ * carries session_id = null — legal, and a scan at the door is exactly when that becomes
+ * known). Name matching is case-insensitive, matching attendees_event_name_uniq.
  *
- * Returns null when nothing matched — the session is not this event's, or nobody of that
- * name RSVPed. Both are 404s. Throws 42P01/42703 for the route to map to 503.
+ * `a.session_id is null or a.session_id = s.id` is what makes that safe: an attendee already
+ * on ANOTHER session of the same event matches no row, so a scan at the wrong door can never
+ * silently move their RSVP — and because it is part of the same statement, two concurrent
+ * scans for two different sessions cannot race into "the later one wins". The DELETE below
+ * clears only checked_in_at, so a reassignment would have been unrecoverable.
+ *
+ * Returns null when nothing matched — the session is not this event's, nobody of that name
+ * RSVPed, or they are on a different session. The route separates those (404 vs 409) with
+ * failure-path reads. Throws 42P01/42703 for the route to map to 503.
  */
 export async function checkIn(
   eventId: number,
@@ -409,7 +443,10 @@ export async function checkIn(
   name: string,
 ): Promise<CheckIn | null> {
   const trimmed = name.trim();
-  if (!Number.isInteger(eventId) || !Number.isInteger(sessionId)) return null;
+  if (!Number.isInteger(eventId) || eventId < INT4_MIN || eventId > INT4_MAX) return null;
+  if (!Number.isInteger(sessionId) || sessionId < INT4_MIN || sessionId > INT4_MAX) {
+    return null;
+  }
   if (trimmed === "") return null;
   const rows = await query<{ name: string; checked_in_at: Date | string }>(
     `update attendees a
@@ -419,6 +456,7 @@ export async function checkIn(
       where s.id = $2
         and s.event_id = $1
         and a.event_id = $1
+        and (a.session_id is null or a.session_id = s.id)
         and lower(a.name) = lower($3)
     returning a.name, a.checked_in_at`,
     [eventId, sessionId, trimmed],
@@ -441,7 +479,10 @@ export async function undoCheckIn(
   name: string,
 ): Promise<boolean> {
   const trimmed = name.trim();
-  if (!Number.isInteger(eventId) || !Number.isInteger(sessionId)) return false;
+  if (!Number.isInteger(eventId) || eventId < INT4_MIN || eventId > INT4_MAX) return false;
+  if (!Number.isInteger(sessionId) || sessionId < INT4_MIN || sessionId > INT4_MAX) {
+    return false;
+  }
   if (trimmed === "") return false;
   const rows = await query<{ name: string }>(
     `update attendees a
