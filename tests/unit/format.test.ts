@@ -17,6 +17,10 @@ describe("rsvpSummary", () => {
       expect(rsvpSummary(42)).toBe("42 going");
     });
 
+    it("reports the spec's verbatim example for the no-capacity form", () => {
+      expect(rsvpSummary(12)).toBe("12 going");
+    });
+
     it("clamps a negative count to the empty state", () => {
       expect(rsvpSummary(-1)).toBe("No RSVPs yet");
       expect(rsvpSummary(-99)).toBe("No RSVPs yet");
@@ -36,6 +40,10 @@ describe("rsvpSummary", () => {
       expect(rsvpSummary(1, 5)).toBe("1 going · 4 spots left");
     });
 
+    it("reports the spec's verbatim example for the spots-left form", () => {
+      expect(rsvpSummary(8, 10)).toBe("8 going · 2 spots left");
+    });
+
     it("reports full when exactly at capacity", () => {
       expect(rsvpSummary(10, 10)).toBe("Full (10 going)");
       expect(rsvpSummary(1, 1)).toBe("Full (1 going)");
@@ -51,6 +59,46 @@ describe("rsvpSummary", () => {
 
     it("reports the empty state for a negative count even with capacity", () => {
       expect(rsvpSummary(-5, 10)).toBe("No RSVPs yet");
+    });
+  });
+
+  describe("at the exact capacity threshold", () => {
+    // The spec's template is literally "M spots left", so one remaining spot
+    // renders as "1 spots left" — grammatically odd, but spec-literal. This is
+    // pinned deliberately: it must NOT be special-cased to "1 spot left".
+    it("is still not full with exactly one spot left", () => {
+      expect(rsvpSummary(9, 10)).toBe("9 going · 1 spots left");
+    });
+
+    it("walks capacity - 1 -> capacity -> capacity + 1 for capacity 10", () => {
+      expect(rsvpSummary(9, 10)).toBe("9 going · 1 spots left");
+      expect(rsvpSummary(10, 10)).toBe("Full (10 going)");
+      expect(rsvpSummary(11, 10)).toBe("Full (11 going)");
+    });
+
+    it("walks capacity - 1 -> capacity -> capacity + 1 for capacity 2", () => {
+      expect(rsvpSummary(1, 2)).toBe("1 going · 1 spots left");
+      expect(rsvpSummary(2, 2)).toBe("Full (2 going)");
+      expect(rsvpSummary(3, 2)).toBe("Full (3 going)");
+    });
+
+    it("walks capacity - 1 -> capacity -> capacity + 1 for capacity 1", () => {
+      // capacity - 1 is 0 here, and a zero count short-circuits before capacity
+      // is ever considered.
+      expect(rsvpSummary(0, 1)).toBe("No RSVPs yet");
+      expect(rsvpSummary(1, 1)).toBe("Full (1 going)");
+      expect(rsvpSummary(2, 1)).toBe("Full (2 going)");
+    });
+
+    it("never claims zero or negative spots left", () => {
+      for (let capacity = 1; capacity <= 50; capacity += 1) {
+        for (let count = 0; count <= capacity + 2; count += 1) {
+          const summary = rsvpSummary(count, capacity);
+          // \b keeps "10 spots left" etc. from matching the "0 spots left" tail.
+          expect(summary).not.toMatch(/\b0 spots left/);
+          expect(summary).not.toMatch(/-\d+ spots left/);
+        }
+      }
     });
   });
 
