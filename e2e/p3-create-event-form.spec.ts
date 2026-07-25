@@ -59,6 +59,50 @@ test("an empty title shows the inline error and creates nothing", async ({ page,
   expect(after).toBe(before);
 });
 
+test("a double submit creates exactly one event", async ({ page, request }) => {
+  // Regression: `pending` is async state, so two submits could enter the handler before the
+  // button disabled and fire two independent POSTs — and creation is intentionally non-unique.
+  const before = await eventCount(request);
+  const title = `P3 Double Submit ${Date.now()}`;
+
+  await page.goto("/new");
+  await page.getByTestId("create-title").fill(title);
+  await page.getByTestId("create-starts-at").fill("2026-09-15T18:30");
+  await page.getByTestId("create-location").fill("Valletta HQ — Room 2");
+
+  // Two submits back-to-back, dispatched in ONE task so React cannot re-render in between —
+  // this is the race a human double-click only sometimes wins.
+  await page.getByTestId("create-form").evaluate((form: HTMLFormElement) => {
+    form.requestSubmit();
+    form.requestSubmit();
+  });
+
+  await page.waitForURL(/\/events\/\d+$/);
+
+  const after = await eventCount(request);
+  console.log(`[p3] double submit: events before=${before} after=${after}`);
+  expect(after).toBe(before + 1);
+
+  // …and exactly one row bears the unique title.
+  const res = await request.get("/api/events");
+  const body = (await res.json()) as { events: { title: string }[] };
+  expect(body.events.filter((e) => e.title === title)).toHaveLength(1);
+});
+
+test("typing into the title clears a server validation error", async ({ page }) => {
+  await page.goto("/new");
+  await page.getByTestId("create-title").fill("");
+  await page.getByTestId("create-starts-at").fill("2026-09-15T18:30");
+  await page.getByTestId("create-location").fill("Somewhere");
+  await page.getByTestId("create-submit").click();
+
+  await expect(page.getByTestId("form-error")).toBeVisible();
+
+  // Correcting the offending field must retire the stale error immediately, not on next submit.
+  await page.getByTestId("create-title").fill("Now it has a title");
+  await expect(page.getByTestId("form-error")).toHaveCount(0);
+});
+
 test("an empty starts-at shows the inline error and creates nothing", async ({ page, request }) => {
   const before = await eventCount(request);
 

@@ -4,7 +4,7 @@
 // server stays the single validator (never trust the client — the route re-checks with Zod).
 
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 
 /**
  * A `datetime-local` value is wall-clock with NO offset ("2026-08-04T17:00"), but the API
@@ -18,6 +18,13 @@ function toIsoStartsAt(value: string): string {
 
 type CreatedEvent = { id: number };
 
+/** Postgres `int4` upper bound — an id past this can never address a real row. */
+const MAX_INT4 = 2147483647;
+
+function isUsableEventId(id: unknown): id is number {
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0 && id <= MAX_INT4;
+}
+
 export default function NewEventPage() {
   const router = useRouter();
   const [title, setTitle] = useState("");
@@ -25,9 +32,20 @@ export default function NewEventPage() {
   const [location, setLocation] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  // `setPending` is async state: a second submit can enter this handler before React commits
+  // the re-render that disables the button, and event creation is intentionally non-unique —
+  // so a double-click would create TWO events. This ref is the synchronous guard.
+  const submitting = useRef(false);
+
+  /** Any edit means the visible server-side error no longer describes the form. */
+  function clearError() {
+    setError(null);
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting.current) return;
+    submitting.current = true;
     setError(null);
     setPending(true);
     try {
@@ -49,7 +67,7 @@ export default function NewEventPage() {
       }
 
       const id = body?.event?.id;
-      if (typeof id !== "number") {
+      if (!isUsableEventId(id)) {
         setError("Event created, but the response was malformed");
         return;
       }
@@ -57,6 +75,7 @@ export default function NewEventPage() {
     } catch {
       setError("Could not create the event — network error");
     } finally {
+      submitting.current = false;
       setPending(false);
     }
   }
@@ -75,7 +94,10 @@ export default function NewEventPage() {
             id="title"
             name="title"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              clearError();
+            }}
             placeholder="Team Offsite Planning"
             data-testid="create-title"
           />
@@ -88,7 +110,10 @@ export default function NewEventPage() {
             name="startsAt"
             type="datetime-local"
             value={startsAt}
-            onChange={(e) => setStartsAt(e.target.value)}
+            onChange={(e) => {
+              setStartsAt(e.target.value);
+              clearError();
+            }}
             data-testid="create-starts-at"
           />
         </p>
@@ -99,7 +124,10 @@ export default function NewEventPage() {
             id="location"
             name="location"
             value={location}
-            onChange={(e) => setLocation(e.target.value)}
+            onChange={(e) => {
+              setLocation(e.target.value);
+              clearError();
+            }}
             placeholder="Valletta HQ — Room 2"
             data-testid="create-location"
           />
