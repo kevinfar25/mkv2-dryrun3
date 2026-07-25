@@ -68,3 +68,56 @@ export function formatCapacity(input: {
   }
   return waiting > 0 ? `${base} · ${waiting} waiting` : base;
 }
+
+/** Shared by the X3 slot label: same hardening rsvpSummary applies to a count. */
+function safeCount(value: number): number {
+  const floored = Math.floor(value);
+  return Number.isSafeInteger(floored) ? Math.max(0, floored) : 0;
+}
+
+/**
+ * X3 — one session's label for the schedule on the event page. Pure: no DB, no
+ * React, no Date.now(), no globals.
+ *
+ * Shape: `HH:MM UTC · <room> · <check-in>` — e.g. `17:00 UTC · Room 2 · 1 of 2 checked in`.
+ *
+ * Defensive, in the style of rsvpSummary / formatCapacity above:
+ * - startsAt is rendered as UTC time-of-day; an unparseable string is passed
+ *   through verbatim rather than becoming "Invalid Date".
+ * - room null / blank / whitespace-only => "Room TBA" (no room was recorded).
+ * - attendees and checkedIn are floored to safe, non-negative integers (NaN,
+ *   ±Infinity, negatives and out-of-safe-range values become 0), and checkedIn
+ *   is clamped to attendees — a count of arrivals cannot exceed the roll.
+ * - zero attendees is the SENTINEL case: "No attendees yet". Nothing here ever
+ *   divides, so no derived number can be NaN or Infinity. Session-less
+ *   attendees are legal, so a legitimately empty session is expected.
+ */
+export function formatSessionSlot(input: {
+  startsAt: string;
+  room: string | null;
+  attendees: number;
+  checkedIn: number;
+}): string {
+  const when = formatSlotTime(input.startsAt);
+
+  const trimmedRoom = (input.room ?? "").trim();
+  const room = trimmedRoom.length > 0 ? trimmedRoom : "Room TBA";
+
+  const attendees = safeCount(input.attendees);
+  const checkedIn = Math.min(safeCount(input.checkedIn), attendees);
+
+  if (attendees === 0) {
+    return `${when} · ${room} · No attendees yet`;
+  }
+  if (checkedIn === attendees) {
+    return `${when} · ${room} · All ${attendees} arrived`;
+  }
+  return `${when} · ${room} · ${checkedIn} of ${attendees} checked in`;
+}
+
+/** UTC time-of-day for an ISO timestamp; the raw input when it is not a date. */
+function formatSlotTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${date.toISOString().slice(11, 16)} UTC`;
+}

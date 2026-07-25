@@ -9,6 +9,9 @@ import { listAttendees } from "@/lib/store";
 // X1 on its own line for the same reason P6 is: a diff with zero deleted lines cannot
 // conflict when X2/X3 rebase on top of this branch.
 import { listSessions } from "@/lib/store";
+// X3 on its own line for the same reason X1 and P6 are: X4 builds on this branch and
+// shares lib/format.ts, so a diff with zero deleted lines cannot conflict on rebase.
+import { formatSessionSlot } from "@/lib/format";
 
 // Reads the DB → must be dynamic. `next build` has no DATABASE_URL and the pool in
 // lib/db.ts is lazy for the same reason; a statically rendered page would throw.
@@ -67,6 +70,32 @@ export default async function EventDetailPage({
       </dl>
       <p data-testid="rsvp-summary">{rsvpSummary(count)}</p>
       <RsvpForm eventId={event.id} sessions={sessions} />
+      {/* X3 — the schedule. An event with no sessions renders NOTHING here: no heading, no
+          placeholder, no wrapper. `sessions` is also [] for EVERY event on the hosted DB
+          until 20260727010000 is applied, so this branch is what keeps the live page byte-for-byte
+          what it is today. The testid lives on the wrapper (not the <ul>) so a locator works
+          whatever the row count is — but a zero-session page has no wrapper to find at all.
+          Order comes from listSessions (starts_at asc, title asc, id asc); this does NOT re-sort. */}
+      {sessions.length > 0 && (
+        <section data-testid="session-schedule">
+          <h2>Schedule</h2>
+          <ul>
+            {sessions.map((session) => (
+              <li key={session.id} data-testid="session">
+                <span data-testid="session-title">{session.title}</span>{" "}
+                <span data-testid="session-slot">
+                  {formatSessionSlot({
+                    startsAt: session.startsAt,
+                    room: session.room,
+                    attendees: session.attendeeCount,
+                    checkedIn: session.checkedInCount,
+                  })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {/* The testid lives on the WRAPPER, not the <ul>, so it is present in BOTH states —
           a locator on it never has to know whether anybody has RSVP'd yet. */}
       <section data-testid="attendee-list">
