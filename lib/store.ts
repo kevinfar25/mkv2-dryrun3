@@ -62,3 +62,66 @@ export async function getEvent(id: number): Promise<EventRow | null> {
   );
   return rows[0] ? normalizeEventRow(rows[0]) : null;
 }
+
+// ── P4 — attendees (RSVPs) ─────────────────────────────────────────────────
+//
+// EXPAND/CONTRACT. Merging the PR deploys this code; the hosted schema is applied
+// separately by POST /api/setup afterwards. So between those two moments this code
+// runs against the OLD schema, where `attendees` does not exist yet. Reads must
+// degrade (0 / []) and the write must be reported as "not yet applied" — never a 500.
+
+/** Postgres `undefined_table`. */
+export const UNDEFINED_TABLE = "42P01";
+/** Postgres `foreign_key_violation`. */
+export const FOREIGN_KEY_VIOLATION = "23503";
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/** True when the failure is "relation does not exist" — the pre-/api/setup window. */
+export function isUndefinedTable(error: unknown): boolean {
+  return errorCode(error) === UNDEFINED_TABLE;
+}
+
+/** True when the RSVP referenced an event id that does not exist. */
+export function isForeignKeyViolation(error: unknown): boolean {
+  return errorCode(error) === FOREIGN_KEY_VIOLATION;
+}
+
+/**
+ * Record an RSVP. Case-insensitively unique per event (attendees_event_name_uniq), so
+ * a repeat RSVP is a silent no-op rather than an error. Returns true when a row was
+ * actually inserted. Throws on 42P01 — the WRITE path must surface that as a 503, not
+ * pretend the RSVP was stored.
+ */
+export async function rsvp(eventId: number, name: string): Promise<boolean> {
+  if (!Number.isInteger(eventId)) return false;
+  const trimmed = name.trim();
+  if (trimmed === "") return false;
+  const rows = await query<{ id: number }>(
+    `insert into attendees (event_id, name)
+     values ($1, $2)
+     on conflict do nothing
+     returning id`,
+    [eventId, trimmed],
+  );
+  return rows.length > 0;
+}
+
+/** Single query — no per-row fan-out. 0 on the old schema (see EXPAND/CONTRACT above). */
+export async function rsvpCount(eventId: number): Promise<number> {
+  if (!Number.isInteger(eventId)) return 0;
+  try {
+    const rows = await query<{ count: string }>(
+      `select count(*)::text as count from attendees where event_id = $1`,
+      [eventId],
+    );
+    return rows[0] ? Number(rows[0].count) : 0;
+  } catch (error) {
+    if (isUndefinedTable(error)) return 0;
+    throw error;
+  }
+}

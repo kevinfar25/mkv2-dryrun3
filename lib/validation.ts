@@ -37,6 +37,21 @@ export const eventInput = z.object({
 
 export type EventInput = z.infer<typeof eventInput>;
 
+// Server-side validation for RSVP input, sharing the event guards above so the RSVP
+// route cannot drift back into 500ing on a NUL byte. .strict(): an unknown key is a 400.
+export const rsvpInput = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1, "name is required")
+      .max(120, "name must be 120 characters or fewer")
+      .refine(noNulByte, `name ${NUL_MESSAGE}`),
+  })
+  .strict();
+
+export type RsvpInput = z.infer<typeof rsvpInput>;
+
 export type ParseResult =
   | { ok: true; data: EventInput }
   | { ok: false; errors: string[] };
