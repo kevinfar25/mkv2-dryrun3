@@ -253,6 +253,7 @@ test("POST /api/events creates an event that appears first on the list and opens
     await expect(page.getByTestId("event-location")).toHaveText("Gate Hall");
   } finally {
     await pool.query("delete from attendees where event_id = $1", [id]);
+    await pool.query("delete from sessions where event_id = $1", [id]);
     await pool.query("delete from events where id = $1", [id]);
   }
 });
@@ -366,6 +367,7 @@ test("POST /api/events accepts the exact boundary values (limits are not off by 
   } finally {
     if (ids.length > 0) {
       await pool.query("delete from attendees where event_id = any($1::int[])", [ids]);
+      await pool.query("delete from sessions where event_id = any($1::int[])", [ids]);
       await pool.query("delete from events where id = any($1::int[])", [ids]);
     }
   }
@@ -387,6 +389,11 @@ test("the empty state renders when there are no events, and the list returns aft
 
   try {
     await pool.query("delete from attendees");
+    // X1 adds `sessions`, a child of events. Its FK has no ON DELETE CASCADE (matching
+    // attendees and waitlist), and the migration gives every pre-existing event a
+    // General Admission session — so without this the wholesale delete below raises
+    // sessions_event_id_fkey and the snapshot restore then fails on a duplicate key.
+    await pool.query("delete from sessions");
     await pool.query("delete from events");
 
     await page.goto("/");

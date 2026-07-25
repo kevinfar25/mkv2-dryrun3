@@ -34,6 +34,12 @@ async function deleteEventsByTitle(title: string): Promise<void> {
     "delete from attendees where event_id in (select id from events where title = $1)",
     [title],
   );
+  // X1 adds `sessions`, a child of events with a plain FK (matching attendees and
+  // waitlist), so every cleanup that removes an event must clear its sessions first.
+  await pool.query(
+    "delete from sessions where event_id in (select id from events where title = $1)",
+    [title],
+  );
   await pool.query("delete from events where title = $1", [title]);
 }
 
