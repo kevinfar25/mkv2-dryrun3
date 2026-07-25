@@ -75,6 +75,14 @@ export default async function EventDetailPage({
             ))}
           </ul>
         )}
+        {/* listAttendees caps at ATTENDEE_PAGE_LIMIT rows, so a busy event would otherwise
+            render its newest slice as though it were the whole list. `count` is P4's
+            already-awaited total — reading it here discloses the truncation for free. */}
+        {count > attendees.length && (
+          <p data-testid="attendee-truncated">
+            Showing the {attendees.length} most recent of {count} attendees.
+          </p>
+        )}
       </section>
     </main>
   );
