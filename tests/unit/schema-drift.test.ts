@@ -23,6 +23,7 @@ describe("SCHEMA_SQL", () => {
     expect(files).toEqual([
       "20260725010000_events.sql",
       "20260725020000_attendees.sql",
+      "20260726010000_capacity_waitlist.sql",
     ]);
     const migrations = files
       .map((f) => readFileSync(join(MIGRATIONS_DIR, f), "utf8"))
