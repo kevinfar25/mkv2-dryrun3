@@ -18,12 +18,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           marginInline: "auto",
         }}
       >
-        {/* Shared top nav. Minimal on purpose — P3 adds its own link alongside Home. */}
+        {/* Shared top nav. Minimal on purpose. */}
         <nav
           data-testid="top-nav"
           style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem" }}
         >
           <Link href="/">Home</Link>
+          <Link href="/new">New event</Link>
         </nav>
         {children}
       </body>
