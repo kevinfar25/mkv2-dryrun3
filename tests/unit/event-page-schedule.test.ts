@@ -6,11 +6,14 @@ import { describe, expect, it } from "vitest";
 // RENDER-STRUCTURE invariant is to read the component source. Two invariants matter enough to
 // pin, because neither is covered by the pure formatter tests:
 //
-//  1. The schedule renders NOTHING when there are no sessions. `sessions` is [] for every event
-//     on the hosted DB until 20260727010000 is applied, so the zero-session branch IS the
-//     current production path — "an event with no sessions renders exactly as it does today" is
-//     this phase's exit condition. A regression that hoisted the <section> or its <h2> out of
-//     the `sessions.length > 0` guard would ship empty scaffolding with every other test green.
+//  1. The schedule renders NOTHING when there are no sessions. This branch is STILL live, but
+//     no longer for the reason first written here: 20260727010000 has since been applied, and its
+//     legacy backfill is deliberately UNCONDITIONAL, so every event that existed at that moment
+//     — Quarterly Demo Day included — now has exactly one "General Admission" session. The
+//     zero-session case is therefore no longer "every event"; it is an event CREATED AFTER the
+//     migration applied, which production genuinely has. So the invariant stands and still needs
+//     pinning: a regression that hoisted the <section> or its <h2> out of the
+//     `sessions.length > 0` guard would ship empty scaffolding with every other test green.
 //  2. The page does not re-sort. Ordering is X1's contract in listSessions
 //     (`starts_at asc, title asc, id asc`); the page's only job is to map what it was given.
 const PAGE_PATH = "app/events/[id]/page.tsx";

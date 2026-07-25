@@ -71,9 +71,10 @@ export default async function EventDetailPage({
       <p data-testid="rsvp-summary">{rsvpSummary(count)}</p>
       <RsvpForm eventId={event.id} sessions={sessions} />
       {/* X3 — the schedule. An event with no sessions renders NOTHING here: no heading, no
-          placeholder, no wrapper. `sessions` is also [] for EVERY event on the hosted DB
-          until 20260727010000 is applied, so this branch is what keeps the live page byte-for-byte
-          what it is today. The testid lives on the wrapper (not the <ul>) so a locator works
+          placeholder, no wrapper. That branch is still reachable — 20260727010000 has since
+          been applied and its unconditional backfill gave every then-existing event a session, so
+          the zero-session case is now an event created AFTER that apply rather than every event.
+          The testid lives on the wrapper (not the <ul>) so a locator works
           whatever the row count is — but a zero-session page has no wrapper to find at all.
           Order comes from listSessions (starts_at asc, title asc, id asc); this does NOT re-sort. */}
       {sessions.length > 0 && (
