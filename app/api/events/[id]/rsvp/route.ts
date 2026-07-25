@@ -28,7 +28,9 @@ export async function POST(
 ) {
   const { id } = await params;
   const eventId = /^\d+$/.test(id) ? Number(id) : Number.NaN;
-  if (!Number.isSafeInteger(eventId)) {
+  // events.id is a `serial` (int4): an out-of-range id would make Postgres raise 22003
+  // (a 500) rather than match no rows, so reject it before it reaches the query.
+  if (!Number.isInteger(eventId) || eventId < 1 || eventId > 2147483647) {
     return NextResponse.json({ error: "event not found" }, { status: 404 });
   }
 

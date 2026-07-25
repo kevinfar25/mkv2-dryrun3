@@ -23,7 +23,9 @@ export default async function EventDetailPage({
   const { id } = await params;
   // Only a plain positive integer is a real id — "abc" or "1e3" is a 404, not a query.
   const eventId = /^\d+$/.test(id) ? Number(id) : Number.NaN;
-  if (!Number.isSafeInteger(eventId)) notFound();
+  // events.id is a `serial` (int4): anything past 2147483647 makes Postgres raise 22003
+  // instead of returning no rows, so it has to 404 here rather than reach the query.
+  if (!Number.isInteger(eventId) || eventId < 1 || eventId > 2147483647) notFound();
 
   const event = await getEvent(eventId);
   if (!event) notFound();
