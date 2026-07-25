@@ -109,6 +109,99 @@
       condition. Do not re-ask.</li></ul>
   </section>
 
+  <section id="amendments" class="warn">
+    <h2>Amendments — applied after gate G0 (2026-07-25)</h2>
+    <p class="legend">Gate G0 (read-only Codex attack on this plan) returned five blocking objections
+      and one minor one. All six were <b>in scope</b> — each was a gap implied by the plan's own
+      phases and exit conditions, not a new feature or an open decision — so all six were fixed here
+      and the waves re-derived with <code>wave-plan.mjs</code>. No human decision was required.
+      Verdict on disk: <code>.mkv2-run/codex-G0.txt</code>.</p>
+    <table>
+      <tr><th>#</th><th>Objection</th><th>Amendment</th></tr>
+      <tr><td>1</td><td><b>[BLOCKING]</b> X3 was in wave 1 on bare <code>origin/main</code>, but it
+        renders per-session attendance and <code>listSessions(eventId)</code> does not exist in
+        <code>lib/store.ts</code> today — only X1 creates it. X3 could not compile. Adding a store
+        method inside X3 instead would create a same-wave collision with X1.</td>
+        <td>X3→X1 made an <b>explicit</b> dependency; X3 builds on X1's branch. Waves re-derived to
+        <code>[X1] → [X2, X3] → [X4]</code>. X1's <code>listSessions</code> now returns
+        <code>attendeeCount</code>/<code>checkedInCount</code> ordered <code>starts_at, title</code>,
+        so X3 needs no store change and no dependency on X2.</td></tr>
+      <tr><td>2</td><td><b>[BLOCKING]</b> X1's literal text (database-enforced
+        <code>session_id NOT NULL</code>, <i>rename</i> <code>created_at</code>→<code>rsvped_at</code>)
+        is not expand-safe. The live build inserts only <code>(event_id, name)</code> and orders by
+        <code>created_at</code>; the migration is guaranteed to be applied while that build serves
+        traffic. The static screen also rejects <code>RENAME</code>/<code>SET NOT NULL</code>.</td>
+        <td>X1 rewritten strictly expand-only: nullable <code>session_id</code> + FK, nullable
+        <code>checked_in_at</code>, <b>add</b> <code>rsvped_at</code> + backfill while
+        <b>keeping</b> <code>created_at</code>. <code>NOT NULL</code> and retiring
+        <code>created_at</code> are deferred to a later CONTRACT migration. The requirement is
+        enforced in application code (X2 writes <code>session_id</code> on every RSVP).</td></tr>
+      <tr><td>3</td><td><b>[BLOCKING]</b> Nothing seeded sessions (<code>SEED_EVENTS</code> is
+        events-only), so X3's "seeded multi-session event" exit was unreachable; and no phase made
+        RSVP session-aware, so <code>session_id</code> would stay null forever — nobody could be
+        checked in and X4 would undercount.</td>
+        <td>X1 seeds <code>SeedSession</code> data (incl. a same-<code>starts_at</code> pair and a
+        zero-session event) and backfills existing attendees onto a per-event legacy session. X2 now
+        owns the session-aware RSVP path (optional <code>sessionId</code> on <code>rsvpInput</code>,
+        route verification, form picker) — same phase, because <code>rsvpInput</code> is
+        <code>.strict()</code> so an unknown key is a 400.</td></tr>
+      <tr><td>4</td><td><b>[BLOCKING]</b> <code>tests/unit/schema-drift.test.ts</code> pins the
+        migration filename list to the current three files, so X1's new migration fails
+        <code>npm test</code> — yet X1's file table omitted that test.</td>
+        <td>That test added to X1's file set, plus a hermetic store/DDL test. (The e2e fixtures that
+        insert attendees without <code>session_id</code> and restore only <code>created_at</code> need
+        no change <i>because</i> the migration is now expand-only.)</td></tr>
+      <tr><td>5</td><td><b>[BLOCKING]</b> Several exits demanded deployed-app checks as pre-merge
+        gates, impossible with no laptop-reachable database. X4's stated comparator was incoherent:
+        <code>/api/events</code> returns bare <code>EventRow</code>s with no counts.</td>
+        <td>Every exit split into <b>pre-merge</b> (unit tests, typecheck, lint, build — unit tests
+        mock <code>query</code>) and <b>post-deploy acceptance</b>. X4 now compares against X1's
+        seeded fixture totals, using <code>/api/events</code> only for the event set and ordering.</td></tr>
+      <tr><td>6</td><td><b>[MINOR]</b> X4's report was nondeterministic: no busiest-session tiebreak,
+        no response shape, no rate format.</td>
+        <td>X4 pins the JSON shape, event ordering (newest first), rate precision (one decimal) and
+        the tiebreak (attendee count → earliest <code>starts_at</code> → lowest <code>id</code>).</td></tr>
+    </table>
+    <h3>Round 2 — and the cap</h3>
+    <p class="legend">A second G0 round on the amended plan confirmed objections 1, 2, 4 and 6
+      <b>RESOLVED</b>, found 3 and 5 only partly addressed, and raised three new blocking items. Those
+      five were fixed too (below). Verdict on disk: <code>.mkv2-run/codex-G0-round2.txt</code>.</p>
+    <table>
+      <tr><th>Item</th><th>Objection</th><th>Amendment</th></tr>
+      <tr><td>r2-a</td><td><b>[BLOCKING]</b> X2's session picker needs the server page to pass
+        sessions into the client <code>RsvpForm</code> (it receives only <code>eventId</code> today),
+        which would make X2 edit <code>page.tsx</code> — a same-wave collision with X3.</td>
+        <td>The page↔form plumbing moved into <b>X1</b>: the page calls <code>listSessions</code> and
+        passes a <code>sessions</code> prop; <code>RsvpForm</code> accepts it. X2 then fills in only
+        the picker inside <code>rsvp-form.tsx</code> and X3 renders only the schedule in
+        <code>page.tsx</code>. X2 and X3 stay parallel. <code>listSessions</code> must tolerate a
+        missing <code>sessions</code> table (<code>isUndefinedTable</code>) since code deploys before
+        the migration applies.</td></tr>
+      <tr><td>r2-b</td><td><b>[BLOCKING]</b> The seeded fixture was unreachable by any sanctioned
+        path — <code>POST /api/setup</code> is a hard stop in this run.</td>
+        <td>The migration seeds the demo sessions itself, idempotently and scoped, so the fixture
+        arrives through <code>npm run prod:migrate:apply</code>. <code>/api/setup</code> is updated only
+        for fresh-bootstrap parity and is <b>not used by this run</b>.</td></tr>
+      <tr><td>r2-c</td><td><b>[BLOCKING]</b> A merely-optional <code>sessionId</code> contradicts
+        "X2 writes <code>session_id</code> on every RSVP" — omission would still create session-less
+        attendees.</td>
+        <td><code>sessionId</code> is <b>conditionally required</b>: a 400 when the event has sessions
+        and it is absent; omission accepted only for a zero-session event. Both branches unit-tested.</td></tr>
+      <tr><td>r2-d</td><td><b>[MINOR]</b> X3's exit and the global gates table still read as
+        pre-merge deployed checks.</td>
+        <td>Both relabelled <b>post-deploy acceptance</b>; pre-merge is unit tests + build + typecheck
+        + lint only.</td></tr>
+    </table>
+    <p class="legend"><b class="warn">⚠ G0 WAS CAPPED BY HUMAN DIRECTIVE AFTER 2 ROUNDS — IT IS NOT
+      RECORDED AS CLEAN.</b> Each amendment gives the reviewer new surface to object to, so a third
+      round is an unbounded loop that builds nothing. The plan above is <b>final as amended</b>. No
+      round-2 objection is left unaddressed in the plan text, but the amendments themselves were
+      <b>never re-reviewed</b>, so residual risk is carried into the per-phase gates (G1/G2, the jig's
+      B2 re-review, and the migration safety gate) rather than resolved here. The standing rule for
+      the rest of the run: <b>any judgment gate re-running on the same artifact is capped at 2
+      rounds</b>; at the cap the residual is recorded and the run moves on.</p>
+  </section>
+
   <section id="graph" class="warn">
     <h2>Dependency shape (derive it, do not assume it)</h2>
     <p>Run <code>node .claude/skills/magic-kingdom-v2/scripts/wave-plan.mjs &lt;manifest&gt;</code>
@@ -116,15 +209,22 @@
     <table>
       <tr><th>Phase</th><th>Touches</th><th>Effective deps</th><th>Build base</th><th>Wave</th></tr>
       <tr><td>X1</td><td><code>lib/store.ts</code>, schema</td><td>—</td><td><code>origin/main</code></td><td>1</td></tr>
-      <tr><td>X2</td><td><code>lib/store.ts</code></td><td>X1 <span class="tag dep">inferred</span></td><td><code>branch:X1</code></td><td>2</td></tr>
-      <tr><td>X3</td><td><code>lib/format.ts</code></td><td>—</td><td><code>origin/main</code></td><td>1</td></tr>
-      <tr><td>X4</td><td><code>lib/format.ts</code></td><td>X3 <span class="tag dep">inferred</span></td><td><code>branch:X3</code></td><td>2</td></tr>
+      <tr><td>X2</td><td><code>lib/store.ts</code>, <code>lib/validation.ts</code>, RSVP + check-in routes</td><td>X1 <span class="tag dep">explicit</span></td><td><code>branch:X1</code></td><td>2</td></tr>
+      <tr><td>X3</td><td><code>lib/format.ts</code>, event page</td><td>X1 <span class="tag dep">explicit — needs <code>listSessions</code></span></td><td><code>branch:X1</code></td><td>2</td></tr>
+      <tr><td>X4</td><td><code>lib/format.ts</code></td><td>X1, X3 <span class="tag dep">X3 inferred</span></td><td><code>branch:X3</code></td><td>3</td></tr>
     </table>
-    <p class="legend">Neither X2→X1 nor X4→X3 is written as an explicit dependency anywhere in this
-      plan. They are <b>inferred from the shared file</b>, and they matter: an X2 built on bare
-      <code>origin/main</code> would not contain X1's <code>lib/store.ts</code> changes, would
-      likely not compile, and would be guaranteed to conflict when rebased after X1 merges.
-      Install order is <code>X1 → X2 → X3 → X4</code>, with the migration-bearing phase first.</p>
+    <p class="legend"><b>AMENDED after gate G0 — see the Amendments section.</b> The waves and build
+      bases above are the verbatim output of
+      <code>wave-plan.mjs .mkv2-run/manifest-v2.json</code>:
+      waves <code>[X1] → [X2, X3] → [X4]</code>, install order <code>X1 → X2 → X3 → X4</code>
+      with the migration-bearing phase first. X4→X3 is still <b>inferred from the shared
+      <code>lib/format.ts</code></b>. X2→X1 and X3→X1 are now <b>explicit</b>: both consume store
+      code that only X1 creates. The original plan put X3 in wave 1 on bare
+      <code>origin/main</code>, which cannot compile — X3 renders per-session attendance and
+      <code>listSessions(eventId)</code> exists nowhere in <code>lib/store.ts</code> today. Building
+      a phase on bare <code>origin/main</code> when it needs a sibling's edits is the specific bug
+      these bases prevent: it would not compile, and it would be guaranteed to conflict at the
+      jig's rebase.</p>
   </section>
 
   <h2>Phases</h2>
@@ -141,26 +241,91 @@
         Titles are unique per event, case-insensitively, as an expression index — matching how
         <code>attendees</code> and <code>waitlist</code> already do it.</li>
       <li><b>Attendance is per session now.</b> An attendee attends a specific session, so
-        <code>attendees</code> needs a <code>session_id</code> pointing at it. An attendee row with
-        no session is meaningless — nothing in the product can render it and the attendance report
-        in X4 would silently undercount — so <code>session_id</code> must be
-        <b>required and enforced by the database</b>, not merely by application code.</li>
+        <code>attendees</code> needs a <code>session_id</code> pointing at it (FK to
+        <code>sessions</code>).
+        <b class="warn">AMENDED (G0): this column is NULLABLE and stays nullable in this
+        migration.</b> The product intent — "an attendee with no session is meaningless" — is real,
+        but a database-enforced <code>NOT NULL</code> here is <b>not expand-safe</b> and would break
+        the build still serving traffic: the deployed RSVP path inserts only
+        <code>(event_id, name)</code> (<code>lib/store.ts</code>), so every old-build RSVP would
+        start failing the moment the migration commits — and in this repo the migration is
+        <i>guaranteed</i> to be applied while the previous build is live, because the runner lives
+        inside the deployed app. <b>The <code>NOT NULL</code> is deferred to a later CONTRACT
+        migration</b>, once no deployed build writes session-less attendees. Enforce the requirement
+        in application code now (X2 writes <code>session_id</code> on every new RSVP).</li>
+      <li><b>Backfill, so X4 does not undercount.</b> Existing attendees predate sessions. Create one
+        <b>legacy session per event that already has attendees</b> (title
+        <code>"General Admission"</code>, <code>starts_at</code> = the event's
+        <code>starts_at</code>, null room) and point those attendees at it, so historical attendance
+        is attributed rather than invisible. This is a scoped
+        <code>UPDATE … WHERE session_id is null</code>, not a blanket rewrite — the static screen
+        reports it as a <i>note</i>, and that note is expected and accounted for here.</li>
       <li><b>Check-in.</b> Add <code>attendees.checked_in_at timestamptz</code>, null meaning "not
         yet arrived".</li>
       <li><b>Naming cleanup.</b> <code>attendees.created_at</code> is misleading — it is the moment
         someone RSVPed, not a row-creation timestamp, and two reports have already been written
-        against the wrong reading. Move the codebase onto the accurate name
-        <code>rsvped_at</code>.</li>
+        against the wrong reading. Introduce the accurate name <code>rsvped_at</code>.
+        <b class="warn">AMENDED (G0): this is an ADD + backfill, NOT a RENAME.</b> A
+        <code>RENAME COLUMN</code> breaks the live build's attendee query, which selects and orders
+        by <code>created_at</code> (<code>lib/store.ts</code>), and the static safety screen rejects
+        <code>RENAME</code> outright. Add <code>rsvped_at timestamptz</code>, backfill it from
+        <code>created_at</code>, default it for new rows, and <b>keep <code>created_at</code>
+        in place</b>. Retiring <code>created_at</code> is a later CONTRACT migration.</li>
       <li>In <code>lib/store.ts</code>: extend the attendee type with <code>sessionId</code> and
-        <code>checkedInAt</code>, and add <code>listSessions(eventId)</code>.</li>
-      <li>Mirror the DDL into <code>SCHEMA_SQL</code> and run <code>npm run gen:migrations</code>.</li>
+        <code>checkedInAt</code>, and add <code>listSessions(eventId)</code>.
+        <b class="warn">AMENDED (G0):</b> <code>listSessions</code> returns each session <b>with its
+        <code>attendeeCount</code> and <code>checkedInCount</code></b>, ordered by
+        <code>starts_at</code> then <code>title</code> (the stable tiebreak X3's tests assert). X3
+        renders exactly these numbers, so they belong to this phase's single aggregate query — if X3
+        added its own store method instead it would collide with this phase on
+        <code>lib/store.ts</code>. Read <code>rsvped_at</code> via
+        <code>coalesce(rsvped_at, created_at)</code> so the store is correct against both schemas.</li>
+      <li><b>Seed a multi-session event — through the migration, not <code>/api/setup</code>.</b>
+        <code>SEED_EVENTS</code> seeds events only, so no session rows can exist and X3's "seeded
+        multi-session event" exit condition is unreachable.
+        <b class="warn">AMENDED (G0 round 2): the fixture must arrive via the recorded migration.</b>
+        <code>POST /api/setup</code> is a hard stop in this run (it applies all of
+        <code>SCHEMA_SQL</code> and records nothing), so a seed that only lives there can never
+        legitimately reach the hosted database. Therefore the migration itself seeds the demo sessions
+        <b>idempotently and scoped</b> (<code>insert … where not exists</code> / <code>on conflict do
+        nothing</code>, keyed on event + title) — it arrives through
+        <code>npm run prod:migrate:apply</code> like the rest of the migration. Seed
+        <b>two sessions at the same <code>starts_at</code></b> on one event (exercises the title
+        tiebreak) and leave <b>one event with zero sessions</b> (X3 must prove that page is
+        unchanged). Also add <code>SeedSession</code> data to <code>lib/schema.ts</code> and teach
+        <code>app/api/setup/route.ts</code> to seed sessions inside its existing advisory-locked
+        transaction, so the <i>fresh-bootstrap</i> path stays coherent — that route is not used by
+        this run, but leaving it events-only would make a from-scratch database disagree with a
+        migrated one.</li>
+      <li><b>Plumb sessions into the page and the RSVP form — in THIS phase.</b>
+        <b class="warn">AMENDED (G0 round 2): this is what keeps X2 and X3 parallel.</b>
+        <code>RsvpForm</code> is a client component that today receives only <code>eventId</code>, and
+        <code>app/events/[id]/page.tsx</code> passes only that. A session picker therefore needs the
+        server page to call <code>listSessions</code> and pass serializable sessions down — and if X2
+        did that, X2 and X3 would both edit <code>page.tsx</code> in the same wave. So X1 does the
+        plumbing: the page calls <code>listSessions(event.id)</code> and passes a
+        <code>sessions</code> prop into <code>RsvpForm</code>, which accepts it (typed, optional,
+        rendering nothing new yet). X2 then only fills in the picker UI inside
+        <code>rsvp-form.tsx</code>, and X3 only renders the schedule in <code>page.tsx</code>. No
+        same-wave collision. <code>listSessions</code> must degrade gracefully if the
+        <code>sessions</code> table does not exist yet (use the existing
+        <code>isUndefinedTable</code> helper) — the code deploys before the migration is applied.</li>
+      <li>Mirror the DDL into <code>SCHEMA_SQL</code> and run <code>npm run gen:migrations</code>.
+        <b class="warn">AMENDED (G0):</b> <code>tests/unit/schema-drift.test.ts</code> pins the
+        migration filename list to the current three files and will fail the moment a fourth is
+        added — update that list in this phase, or <code>npm test</code> cannot go green.</li>
     </ul>
     <table class="files">
       <tr><th>File</th><th>Change</th></tr>
       <tr><td>db/migrations/20260727010000_sessions_checkin.sql</td><td class="new">new</td></tr>
-      <tr><td>lib/schema.ts</td><td class="edit">edit — mirror the DDL</td></tr>
-      <tr><td>lib/store.ts</td><td class="edit">edit — attendee type, listSessions</td></tr>
+      <tr><td>lib/schema.ts</td><td class="edit">edit — mirror the DDL, add SEED_SESSIONS</td></tr>
+      <tr><td>lib/store.ts</td><td class="edit">edit — attendee type, listSessions + counts</td></tr>
       <tr><td>lib/migrations.ts</td><td class="edit">regenerated</td></tr>
+      <tr><td>app/api/setup/route.ts</td><td class="edit">edit — seed sessions (fresh-bootstrap parity only)</td></tr>
+      <tr><td>app/events/[id]/page.tsx</td><td class="edit">edit — fetch sessions, pass to RsvpForm</td></tr>
+      <tr><td>app/events/[id]/rsvp-form.tsx</td><td class="edit">edit — accept the optional sessions prop</td></tr>
+      <tr><td>tests/unit/schema-drift.test.ts</td><td class="edit">edit — pin the 4-file list</td></tr>
+      <tr><td>tests/unit/store-sessions.test.ts</td><td class="new">new — hermetic, mocks <code>query</code></td></tr>
     </table>
     <div class="exit"><b>Exit:</b> <code>npm run check:migrations</code>, <code>npm test</code>,
       <code>npx tsc --noEmit</code> and <code>npm run lint</code> all clean; the static migration
@@ -170,7 +335,7 @@
   </section>
 
   <!-- ============ X2 ============ -->
-  <section class="phase" id="x2" data-phase="X2" data-deps="" data-migration="false">
+  <section class="phase" id="x2" data-phase="X2" data-deps="X1" data-migration="false">
     <h3>[] X2 — Check-in API <span class="tag dep">shares lib/store.ts with X1</span></h3>
     <p>Let an organiser mark an attendee as arrived, and undo it.</p>
     <ul>
@@ -182,26 +347,61 @@
       <li>In <code>lib/store.ts</code>: <code>checkIn</code>, <code>undoCheckIn</code>,
         <code>countCheckedIn(sessionId)</code>. In <code>lib/validation.ts</code>: a Zod body schema
         reusing the existing name rules (trimmed, non-empty, length-capped).</li>
+      <li><b class="warn">AMENDED (G0): make RSVP session-aware — nothing else does.</b> X1 leaves
+        <code>session_id</code> nullable on purpose, so unless a write path sets it, every new
+        attendee is session-less forever: they cannot be checked in, and X4 undercounts. This phase
+        owns that path because it already owns <code>lib/validation.ts</code>. Extend
+        <code>rsvpInput</code> with a <code>sessionId</code>, have the RSVP route and store write it,
+        and <b>404 if the session does not belong to that event</b> — the same rule as check-in. Note
+        <code>rsvpInput</code> is <code>.strict()</code>, so an unknown key is already a 400: the
+        picker in the form below and this schema change <b>must land in the same phase</b> or the
+        form's POST is rejected.</li>
+      <li><b class="warn">AMENDED (G0 round 2): <code>sessionId</code> is CONDITIONALLY REQUIRED, not
+        merely optional.</b> A plain optional field would let a caller omit it and silently recreate
+        the session-less attendee this plan exists to eliminate — X4 would undercount again. The rule:
+        <b>if the event has one or more sessions, <code>sessionId</code> is required and its absence is
+        a 400</b>; omission is accepted <b>only</b> when the event has no sessions (which is what keeps
+        the zero-session form working unchanged). Both branches are unit-testable with a mocked
+        <code>query</code> and both must be tested.</li>
+      <li>Add a <b>session picker to the RSVP form</b> (<code>app/events/[id]/rsvp-form.tsx</code>)
+        when the event has sessions, so the feature is reachable from the UI and not merely from
+        curl. An event with no sessions keeps its current single-field form exactly as it is.
+        X1 already passes the <code>sessions</code> prop in, so <b>this phase does not touch
+        <code>app/events/[id]/page.tsx</code></b> — that file belongs to X3, and touching it here
+        would collide inside wave 2.</li>
+      <li>Use the existing <b>advisory-lock</b> pattern rather than a read-then-write if any sequence
+        number is assigned; idempotency and the 404s are concurrency requirements, and all of them are
+        testable at unit level with a mocked <code>query</code>.</li>
     </ul>
     <table class="files">
       <tr><th>File</th><th>Change</th></tr>
       <tr><td>app/api/events/[id]/checkin/route.ts</td><td class="new">new</td></tr>
       <tr><td>lib/store.ts</td><td class="edit">edit — checkIn/undoCheckIn/countCheckedIn</td></tr>
-      <tr><td>lib/validation.ts</td><td class="edit">edit — check-in body schema</td></tr>
+      <tr><td>lib/validation.ts</td><td class="edit">edit — check-in body schema, optional rsvp sessionId</td></tr>
+      <tr><td>app/api/events/[id]/rsvp/route.ts</td><td class="edit">edit — accept + verify sessionId</td></tr>
+      <tr><td>app/events/[id]/rsvp-form.tsx</td><td class="edit">edit — session picker</td></tr>
+      <tr><td>tests/unit/checkin.test.ts</td><td class="new">new</td></tr>
     </table>
-    <div class="exit"><b>Exit:</b> unit tests cover double check-in idempotency and the
-      wrong-event-session 404; all four CI gates clean; an HTTP check against the deployed app shows
-      a check-in, a repeat that does not move the timestamp, and a delete that clears it.</div>
+    <div class="exit"><b>Exit (pre-merge):</b> unit tests cover double check-in idempotency, the
+      wrong-event-session 404 on both check-in and RSVP, and the delete that clears the timestamp; all
+      four CI gates clean. <b>Post-deploy acceptance</b> (not a pre-merge gate — no database is
+      reachable from a laptop here): an HTTP check against the deployed app shows a check-in, a repeat
+      that does not move the timestamp, and a delete that clears it.</div>
   </section>
 
   <!-- ============ X3 ============ -->
-  <section class="phase" id="x3" data-phase="X3" data-deps="" data-migration="false">
-    <h3>[] X3 — Session schedule on the event page <span class="tag">UI</span></h3>
+  <section class="phase" id="x3" data-phase="X3" data-deps="X1" data-migration="false">
+    <h3>[] X3 — Session schedule on the event page <span class="tag">UI</span><span class="tag dep">depends on X1 — consumes listSessions</span></h3>
     <p>Show the day's running order on <code>/events/[id]</code>.</p>
     <ul>
       <li>List each session in <code>starts_at</code> order: time, title, room, and checked-in count
         against attendee count. An event with no sessions keeps rendering exactly as it does today —
-        no empty scaffolding.</li>
+        no empty scaffolding.
+        <b class="warn">AMENDED (G0): consume X1's <code>listSessions(eventId)</code>, which already
+        returns <code>attendeeCount</code> and <code>checkedInCount</code> ordered by
+        <code>starts_at, title</code>.</b> Do <b>not</b> add a store method in this phase — that
+        would collide with X1 on <code>lib/store.ts</code>. This is why this phase builds on X1's
+        branch and not on bare <code>origin/main</code>.</li>
       <li>In <code>lib/format.ts</code>: a pure <code>formatSessionSlot({startsAt, room,
         attendees, checkedIn})</code> returning the label. Pure and fully unit-tested — no DB, no
         React.</li>
@@ -213,13 +413,17 @@
       <tr><td>app/events/[id]/page.tsx</td><td class="edit">edit — render the schedule</td></tr>
       <tr><td>lib/format.ts</td><td class="edit">edit — formatSessionSlot</td></tr>
     </table>
-    <div class="exit"><b>Exit:</b> unit tests for every edge case above; all four CI gates clean;
-      a real browser on the deployed app shows the schedule on a seeded multi-session event, and an
-      event with no sessions is visually unchanged.</div>
+    <div class="exit"><b>Exit (pre-merge):</b> unit tests for every edge case above; all four CI gates
+      clean. <b>Post-deploy acceptance</b> (not a pre-merge gate — no database is reachable from a
+      laptop here): a real browser shows the schedule on a seeded multi-session event, and an event
+      with no sessions is visually unchanged.
+      <b class="warn">AMENDED (G0 round 2): the browser check is explicitly post-deploy.</b> The
+      zero-session case is a required assertion, not filler — it is this phase's "no empty
+      scaffolding" promise.</div>
   </section>
 
   <!-- ============ X4 ============ -->
-  <section class="phase" id="x4" data-phase="X4" data-deps="" data-migration="false">
+  <section class="phase" id="x4" data-phase="X4" data-deps="X1,X3" data-migration="false">
     <h3>[] X4 — Attendance report endpoint <span class="tag dep">shares lib/format.ts with X3</span></h3>
     <p>One read-only view of who actually turned up.</p>
     <ul>
@@ -229,15 +433,38 @@
         string the endpoint also returns. Zero attendees must not divide by zero — report
         <code>"no attendees yet"</code>, not <code>NaN</code>.</li>
       <li>Must not fail when the board is empty — zeros, a null busiest session, HTTP 200.</li>
+      <li><b class="warn">AMENDED (G0): pin the contract, or the output is nondeterministic and
+        untestable.</b> Fix all of the following explicitly:
+        <ul>
+          <li><b>Response shape:</b>
+            <code>{ events: [{ id, title, sessionCount, attendeeCount, checkedInCount, showUpRate,
+            showUpRateLabel }], totals: { events, sessions, attendees, checkedIn, showUpRate,
+            showUpRateLabel }, busiestSession: { id, eventId, title, attendeeCount } | null }</code>.</li>
+          <li><b>Event ordering:</b> newest first, matching <code>listEvents()</code>.</li>
+          <li><b>Rate format:</b> <code>showUpRate</code> is a number rounded to one decimal place
+            (percent, 0–100); <code>showUpRateLabel</code> is <code>formatShowUpRate()</code>'s human
+            string, and is <code>"no attendees yet"</code> when the denominator is zero. Never
+            <code>NaN</code> or <code>Infinity</code>.</li>
+          <li><b>Busiest-session tiebreak:</b> highest <code>attendeeCount</code>, then earliest
+            <code>starts_at</code>, then lowest <code>id</code>. Null only when there are no
+            sessions at all.</li>
+        </ul></li>
     </ul>
     <table class="files">
       <tr><th>File</th><th>Change</th></tr>
       <tr><td>app/api/attendance/route.ts</td><td class="new">new</td></tr>
       <tr><td>lib/format.ts</td><td class="edit">edit — formatShowUpRate</td></tr>
+      <tr><td>tests/unit/attendance.test.ts</td><td class="new">new</td></tr>
     </table>
-    <div class="exit"><b>Exit:</b> unit tests including the empty-board and zero-attendee cases; all
-      four CI gates clean; <code>GET /api/attendance</code> on the deployed app returns counts
-      consistent with <code>/api/events</code>.</div>
+    <div class="exit"><b>Exit (pre-merge):</b> unit tests including the empty-board, zero-attendee and
+      busiest-session-tiebreak cases; all four CI gates clean. <b>Post-deploy acceptance:</b>
+      <code>GET /api/attendance</code> on the deployed app returns 200 and counts that match the
+      seeded fixture's known totals.
+      <b class="warn">AMENDED (G0): the original exit said "consistent with <code>/api/events</code>",
+      which is not checkable — that endpoint returns bare <code>EventRow</code>s and
+      <code>EventRow</code> carries no session, attendee or check-in counts.</b> Compare against the
+      seeded fixture from X1 instead, and against <code>/api/events</code> only for the event
+      <i>set</i> and its ordering.</div>
   </section>
 
   <section id="gates">
@@ -249,9 +476,16 @@
       <tr><td>lint</td><td>required CI check — <b>0 problems</b>, the baseline is clean</td></tr>
       <tr><td>migration safety</td><td><code>migration-safety.mjs</code> zero violations, then
         expand/contract reasoning against the live schema</td></tr>
-      <tr><td>switch-on</td><td>the feature is reachable from the deployed UI/API, not just merged</td></tr>
-      <tr><td>functional</td><td>real browser or HTTP against the deployed app</td></tr>
+      <tr><td>switch-on</td><td><b>post-deploy</b> — the feature is reachable from the deployed UI/API, not just merged</td></tr>
+      <tr><td>functional</td><td><b>post-deploy</b> — real browser against the served app</td></tr>
     </table>
+    <p class="legend"><b class="warn">AMENDED (G0 round 2): the last two gates are POST-DEPLOY
+      acceptance, never pre-merge exit criteria.</b> No database is reachable from a laptop in this
+      sandbox, so <b>pre-merge verification is unit tests + <code>npm run build</code> +
+      <code>npx tsc --noEmit</code> + <code>npm run lint</code> only</b>, with unit tests mocking
+      <code>query</code> as the existing store tests do. The browser gates run after the code is
+      served: against a locally-served production build of the rebased branch, and against the
+      deployed production URL once merged. A phase is never blocked pre-merge on a deployed check.</p>
     <p class="legend">All three CI checks are <b>required</b> and the ruleset is strict, so every
       merge puts the remaining open PRs <code>BEHIND</code> and each needs an explicit
       <code>gh pr update-branch</code> before it can merge. Auto-merge will not do it —
