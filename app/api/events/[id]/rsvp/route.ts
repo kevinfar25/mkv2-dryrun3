@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import {
   getEvent,
   isForeignKeyViolation,
@@ -7,20 +6,12 @@ import {
   rsvp,
   rsvpCount,
 } from "@/lib/store";
+// Never trust the client: the body is validated here, not in the form component.
+// Shared with the event guards so the NUL rejection cannot drift between the two.
+import { rsvpInput, type RsvpInput } from "@/lib/validation";
 
 // Touches the DB → dynamic, or `next build` would evaluate it without DATABASE_URL.
 export const dynamic = "force-dynamic";
-
-// Never trust the client: the body is validated here, not in the form component.
-const RsvpBody = z
-  .object({
-    name: z
-      .string()
-      .trim()
-      .min(1, "name is required")
-      .max(120, "name must be 120 characters or fewer"),
-  })
-  .strict();
 
 export async function POST(
   request: Request,
@@ -34,9 +25,9 @@ export async function POST(
     return NextResponse.json({ error: "event not found" }, { status: 404 });
   }
 
-  let parsed: z.infer<typeof RsvpBody>;
+  let parsed: RsvpInput;
   try {
-    const result = RsvpBody.safeParse(await request.json());
+    const result = rsvpInput.safeParse(await request.json());
     if (!result.success) {
       return NextResponse.json(
         { error: result.error.issues.map((i) => i.message).join("; ") },

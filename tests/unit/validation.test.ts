@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 // Relative import: vitest.config.ts declares no path aliases, and adding one there
 // would be a shared-file edit the other phases would have to merge around.
-import { parseEventInput } from "../../lib/validation";
+import { parseEventInput, rsvpInput } from "../../lib/validation";
 
 // Built, never typed literally: a raw NUL byte in a source file breaks tooling that
 // reads it as text (and git treats the file as binary).
@@ -123,5 +123,64 @@ describe("parseEventInput", () => {
     expect(parseEventInput(null).ok).toBe(false);
     expect(parseEventInput("nope").ok).toBe(false);
     expect(parseEventInput(undefined).ok).toBe(false);
+  });
+});
+
+describe("rsvpInput", () => {
+  it("accepts a valid name and trims it", () => {
+    const result = rsvpInput.safeParse({ name: "  Ada Lovelace  " });
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error("expected success");
+    expect(result.data.name).toBe("Ada Lovelace");
+  });
+
+  it("accepts a boundary-length name (120)", () => {
+    expect(rsvpInput.safeParse({ name: "n".repeat(120) }).success).toBe(true);
+  });
+
+  // Legitimate unicode must stay storable — the NUL guard must not over-tighten into
+  // rejecting these.
+  for (const [label, name] of [
+    ["ordinary unicode", "Valletta — 会議 ✅"],
+    ["unpaired surrogate", `Bad${String.fromCharCode(0xd800)}Surrogate`],
+    ["astral emoji", "\u{1f600}".repeat(60)],
+    ["embedded newlines", "a\nb\rc"],
+  ] as const) {
+    it(`accepts ${label}`, () => {
+      expect(rsvpInput.safeParse({ name }).success).toBe(true);
+    });
+  }
+
+  for (const [label, raw, expected] of [
+    // A missing name never reaches .min(1), so zod's own type message stands.
+    ["a missing name", {}, "expected string"],
+    ["an empty name", { name: "" }, "name is required"],
+    ["a whitespace-only name", { name: "   " }, "name is required"],
+    ["an over-length name (121)", { name: "n".repeat(121) }, "name must be 120 characters or fewer"],
+    // Postgres text cannot store a NUL byte: without this the INSERT 500s.
+    ["a name containing a NUL byte", { name: `Nul${NUL}Byte` }, "name must not contain a NUL character"],
+    ["a lone NUL name", { name: NUL }, "name must not contain a NUL character"],
+    ["a NUL padded with spaces", { name: `  ${NUL}  ` }, "name must not contain a NUL character"],
+  ] as const) {
+    it(`rejects ${label}`, () => {
+      const result = rsvpInput.safeParse(raw);
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error("expected failure");
+      expect(result.error.issues.map((i) => i.message).join("; ")).toContain(expected);
+    });
+  }
+
+  it("rejects a non-string name", () => {
+    expect(rsvpInput.safeParse({ name: 42 }).success).toBe(false);
+  });
+
+  // .strict(): an unknown key must be a 400, not a silently ignored field.
+  it("rejects unknown keys", () => {
+    expect(rsvpInput.safeParse({ name: "Zed", role: "admin" }).success).toBe(false);
+  });
+
+  it("rejects a non-object body", () => {
+    expect(rsvpInput.safeParse(null).success).toBe(false);
+    expect(rsvpInput.safeParse("nope").success).toBe(false);
   });
 });
