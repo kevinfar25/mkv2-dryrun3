@@ -40,3 +40,4 @@ export function rsvpSummary(count: number, capacity?: number): string {
 
   return `${goingText} · ${cap - going} spots left`;
 }
+
