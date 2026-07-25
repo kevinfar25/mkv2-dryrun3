@@ -206,6 +206,9 @@ on conflict do nothing;
     name: "20260727020000_reconcile_sessionless_attendees.sql",
     sql: `-- RECONCILIATION PASS — ordered step between X2's install and X4's install.
 --
+-- Note: no backticks in this file — it is mirrored verbatim into the SCHEMA_SQL template
+-- literal in lib/schema.ts, where a backtick would terminate the literal.
+--
 -- WHY THIS EXISTS. 20260727010000_sessions_checkin backfilled attendees.session_id at a single
 -- point in time, but the build serving traffic at that moment was still the PRE-X2 one, which
 -- had no notion of sessions and kept INSERTing attendees with session_id NULL. That window is
@@ -227,8 +230,15 @@ on conflict do nothing;
 -- session", not "no session-less attendee anywhere".
 --
 -- EXPAND-SAFE + IDEMPOTENT: a scoped UPDATE only. No DROP, no RENAME, no type narrowing, no
--- NOT NULL. Re-running it matches nothing, because every row it touches ceases to satisfy the
--- WHERE clause. session_id stays nullable — SET NOT NULL remains a later CONTRACT migration.
+-- NOT NULL. session_id stays nullable — SET NOT NULL remains a later CONTRACT migration.
+--
+-- The exists predicate is load-bearing and is NOT redundant with the subquery. Without it the
+-- statement matches every session_id-NULL row, including those on zero-session events where the
+-- correlated lookup yields NULL — Postgres would still rewrite each of those rows from NULL to
+-- NULL, taking a row lock and leaving a dead tuple on every apply. The data outcome is identical
+-- either way, so this is not a semantic fix; it is what makes the statement genuinely touch
+-- nothing on a re-run instead of merely producing the same values. Same predicate, same reason,
+-- as 20260727010000's backfill.
 update attendees
    set session_id = (select s.id
                        from sessions s
@@ -236,7 +246,11 @@ update attendees
                         and lower(s.title) = lower('General Admission')
                       order by s.id
                       limit 1)
- where session_id is null;
+ where session_id is null
+   and exists (select 1
+                 from sessions s
+                where s.event_id = attendees.event_id
+                  and lower(s.title) = lower('General Admission'));
 `,
   },
 ];
