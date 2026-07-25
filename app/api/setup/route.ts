@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withTransaction } from "@/lib/db";
-import { SCHEMA_SQL, SEED_EVENTS } from "@/lib/schema";
+import { SCHEMA_SQL, SEED_EVENTS, SEED_SESSIONS } from "@/lib/schema";
 
 // Touches the DB → must be dynamic, or `next build` would try to run it without
 // DATABASE_URL. The pool in lib/db.ts is lazy for the same reason.
@@ -81,6 +81,30 @@ export async function POST(request: Request) {
            )
            returning id`,
           [event.title, event.startsAt, event.location],
+        );
+        inserted += res.rowCount ?? 0;
+      }
+
+      // X1 — the demo sessions, for FRESH-BOOTSTRAP PARITY ONLY. The hosted database gets
+      // these from the migration itself (20260727010000), which is the only path that records
+      // a version; this route records nothing and is not used by this run. Leaving it
+      // events-only would make a from-scratch database disagree with a migrated one.
+      // Keyed on event title + case-insensitive session title, so it is idempotent and a
+      // no-op when the event does not exist — same predicate as the migration's seed. Inside
+      // the SAME advisory-locked transaction as the events above.
+      for (const session of SEED_SESSIONS) {
+        const res = await client.query(
+          `insert into sessions (event_id, title, starts_at, room)
+           select e.id, $2, $3::timestamptz, $4::text
+             from events e
+            where e.title = $1
+              and not exists (
+                select 1 from sessions s
+                 where s.event_id = e.id and lower(s.title) = lower($2)
+              )
+           on conflict do nothing
+           returning id`,
+          [session.eventTitle, session.title, session.startsAt, session.room],
         );
         inserted += res.rowCount ?? 0;
       }

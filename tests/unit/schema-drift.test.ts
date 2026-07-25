@@ -24,6 +24,7 @@ describe("SCHEMA_SQL", () => {
       "20260725010000_events.sql",
       "20260725020000_attendees.sql",
       "20260726010000_capacity_waitlist.sql",
+      "20260727010000_sessions_checkin.sql",
     ]);
     const migrations = files
       .map((f) => readFileSync(join(MIGRATIONS_DIR, f), "utf8"))
@@ -36,6 +37,21 @@ describe("SCHEMA_SQL", () => {
     expect(SCHEMA_SQL).toMatch(/create table if not exists attendees/);
     expect(SCHEMA_SQL).toMatch(
       /create unique index if not exists attendees_event_name_uniq/,
+    );
+    // X1 — case-insensitive per-event session titles, as an EXPRESSION index (a table-level
+    // UNIQUE cannot take lower()), and the new attendee columns added rather than renamed.
+    expect(SCHEMA_SQL).toMatch(/create table if not exists sessions/);
+    expect(SCHEMA_SQL).toMatch(
+      /create unique index if not exists sessions_event_title_uniq\s+on sessions \(event_id, lower\(title\)\)/,
+    );
+    expect(SCHEMA_SQL).toMatch(
+      /alter table attendees add column if not exists session_id integer references sessions \(id\)/,
+    );
+    expect(SCHEMA_SQL).toMatch(
+      /alter table attendees add column if not exists checked_in_at timestamptz/,
+    );
+    expect(SCHEMA_SQL).toMatch(
+      /alter table attendees add column if not exists rsvped_at timestamptz default now\(\)/,
     );
     // Scan statements only — `-- ...no drop / rename...` comments are prose, not DDL.
     const statements = SCHEMA_SQL.split("\n")

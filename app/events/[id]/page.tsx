@@ -6,6 +6,9 @@ import RsvpForm from "./rsvp-form";
 // P6 imports on its OWN line rather than widening the import above: P6 installs LAST in
 // the merge train, so a diff with ZERO deleted lines cannot conflict on rebase.
 import { listAttendees } from "@/lib/store";
+// X1 on its own line for the same reason P6 is: a diff with zero deleted lines cannot
+// conflict when X2/X3 rebase on top of this branch.
+import { listSessions } from "@/lib/store";
 
 // Reads the DB → must be dynamic. `next build` has no DATABASE_URL and the pool in
 // lib/db.ts is lazy for the same reason; a statically rendered page would throw.
@@ -43,6 +46,13 @@ export default async function EventDetailPage({
   // this server component and picks the new name up.
   const attendees = await listAttendees(eventId);
 
+  // X1 — the page↔form plumbing. Fetched HERE (a server component) and passed down as a
+  // serializable prop, because RsvpForm is a client component and cannot query the DB. X2
+  // fills in the picker inside rsvp-form.tsx; X3 renders the schedule in this file. Nothing
+  // new is rendered yet. listSessions degrades to [] when `sessions` does not exist, which is
+  // exactly the state of the hosted DB until 20260727010000 is applied.
+  const sessions = await listSessions(eventId);
+
   return (
     <main>
       <p>
@@ -56,7 +66,7 @@ export default async function EventDetailPage({
         <dd data-testid="event-location">{event.location}</dd>
       </dl>
       <p data-testid="rsvp-summary">{rsvpSummary(count)}</p>
-      <RsvpForm eventId={event.id} />
+      <RsvpForm eventId={event.id} sessions={sessions} />
       {/* The testid lives on the WRAPPER, not the <ul>, so it is present in BOTH states —
           a locator on it never has to know whether anybody has RSVP'd yet. */}
       <section data-testid="attendee-list">
