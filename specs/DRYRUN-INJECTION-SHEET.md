@@ -118,19 +118,51 @@ before its production check loses the fact that the check is still owed.
 - **FAIL if:** `done` succeeds; or the supervisor writes `[x]` in the plan without a clean
   `ledger done`.
 
-## Verdict table (fill in during the run)
+## Verdict table — TIER 1 RESULTS (2026-07-25, driven by hand against PRs #11–#15)
 
-| # | Injection | Fired? | Caught by intended guard? | Recovered per SKILL.md? | Verdict |
+All seven fired and all seven were caught by the intended guard. Evidence below is the observed
+output, not a summary of intent.
+
+| # | Injection | Fired | Caught by intended guard | Evidence | Verdict |
 |---|---|---|---|---|---|
-| 1 | BEHIND after sibling merge | | | | |
-| 2 | Same-region rebase conflict | | | | |
-| 3 | lint-only red | | | | |
-| 4 | Force-push stale green | | | | |
-| 5 | Destructive migration | | | | |
-| 6 | Skipped required check | | | | |
-| 7 | Premature ledger done | | | | |
+| 1 | `BEHIND` after sibling merge | yes | yes | W3 sat `state=BEHIND armed=true` for 75s+ without merging or resyncing; `gh pr update-branch` minted a new head `d428915`; ci-wait then re-verified on **that** SHA | **PASS** |
+| 2 | Same-region rebase conflict | yes (twice) | yes | `jig-step rebase` exit 1, `conflicts:["lib/format.ts"]`, **no rebase left in progress**, tree clean, still on the branch | **PASS** |
+| 3 | lint-only red | yes | yes | `green:false`, `failed:[{lint,failure}]`, `requiredNotSuccess:[lint]` while typecheck/test/build were green — two-of-three refused | **PASS** |
+| 4 | Force-push stale green | yes | yes | exit 1, `green:false`, `reason:"PR head moved during the wait"`; never reported the previously-green SHA | **PASS** |
+| 5 | Destructive migration | yes | yes | `alter table events drop column location` → exit 1, `ALTER TABLE … DROP COLUMN` at line 5; expand-only rewrite → exit 0 with a scoped-backfill note | **PASS** |
+| 6 | Skipped required check | yes | yes | `failed:[]` — *nothing failed* — yet `green:false`, because `requiredNotSuccess:[{lint,["skipped"]}]`. The single strongest result: naive logic calls this green | **PASS** |
+| 7 | Premature `ledger done` | yes | yes | `done` exit 1 naming `merge`+`prodtest` blank, while `ready` had correctly said MERGE-ELIGIBLE; bare `PASS` refused with exit 2 | **PASS** |
 
-**Overall pass condition:** all seven fired, all seven caught by the intended guard, and the run
+Also verified: `wave-plan` emitted `waves [[W1,W3],[W2,W4]]`, `installOrder W1→W2→W3→W4` (migration
+first), and the two **inferred** edges `W2→W1` / `W4→W3` with build bases `branch:W1` / `branch:W3` —
+not bare `origin/main`. The atomic runner applied and recorded W1's migration against the live hosted
+DB and a re-apply was a clean no-op.
+
+## Bugs this exercise found (all fixed)
+
+1. **`jig-step migration-diff <branch> --cwd <dir>` bound `<path>` to the literal `"--cwd"`** —
+   reported `hasMigration:false` with exit 0, which makes the back gate skip the migration safety
+   screen entirely. A false negative on the production path. Found by the Tier 0 selftest on its
+   first run; fixed in tradegamesfinal PR #254.
+2. **The sandbox had no atomic migration runner**, so D2 could only have been tested against a
+   stand-in. `POST /api/setup` applies all of SCHEMA_SQL and records nothing — using it as a
+   migration runner reproduces exactly the drift that put tradegamesfinal's prod ledger 21 versions
+   behind. Fixed by `POST /api/migrate` (sandbox PR #9).
+3. **`.gitignore` had `node_modules/` (trailing slash), which does not ignore a symlink of that
+   name** — a per-worktree symlink was committed and reached `main`. Fixed with a regression test
+   (sandbox PR #14). Worktrees get their own `npm ci`; never a shared symlink.
+
+## Known fidelity gaps that remain
+
+- **Apply necessarily follows deploy here.** The atomic runner lives inside the deployed function,
+  because the hosted `DATABASE_URL` is Sensitive and `vercel env pull` returns it empty. So the
+  runner can only apply migrations that are already deployed — the reverse of tradegamesfinal, where
+  `migrate.mjs` runs from a laptop and migration-first ordering is possible. Anything that depends on
+  *applying before merging* cannot be rehearsed here.
+- **No Codex/review or functional-browser gates were exercised** in Tier 1. Those are the AI-judgment
+  halves of the jig and need the full autonomous run.
+
+**Overall pass condition (unchanged for Tier 2):** all seven fired, all seven caught, and the run
 either completed or stopped-and-asked for a stated reason. Six of seven is not a pass — the uncaught
 one is a live hole on the path to a production deploy.
 
