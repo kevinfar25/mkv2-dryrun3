@@ -122,6 +122,51 @@ describe("rsvpSummary", () => {
     });
   });
 
+  describe("with an unsafe-integer capacity (ignored)", () => {
+    it("ignores a capacity just past MAX_SAFE_INTEGER", () => {
+      expect(rsvpSummary(1, 9007199254740993)).toBe("1 going");
+      expect(rsvpSummary(1, Number.MAX_SAFE_INTEGER + 1)).toBe("1 going");
+      expect(rsvpSummary(3, 9007199254740993)).toBe("3 going");
+    });
+
+    it("ignores a capacity below -MAX_SAFE_INTEGER", () => {
+      expect(rsvpSummary(3, -9007199254740993)).toBe("3 going");
+      expect(rsvpSummary(3, -(Number.MAX_SAFE_INTEGER + 1))).toBe("3 going");
+    });
+  });
+
+  describe("with an unsafe-integer count (hardened to the empty state)", () => {
+    it("treats a count just past MAX_SAFE_INTEGER as no RSVPs", () => {
+      expect(rsvpSummary(Number.MAX_SAFE_INTEGER + 1)).toBe("No RSVPs yet");
+      expect(rsvpSummary(9007199254740993)).toBe("No RSVPs yet");
+      expect(rsvpSummary(9007199254740993, 10)).toBe("No RSVPs yet");
+    });
+
+    it("treats a count below -MAX_SAFE_INTEGER as no RSVPs", () => {
+      expect(rsvpSummary(-9007199254740993)).toBe("No RSVPs yet");
+    });
+  });
+
+  describe("at the safe-integer boundary (still accepted)", () => {
+    it("accepts MAX_SAFE_INTEGER as a count", () => {
+      expect(rsvpSummary(Number.MAX_SAFE_INTEGER)).toBe(
+        "9007199254740991 going",
+      );
+    });
+
+    it("accepts MAX_SAFE_INTEGER as a capacity", () => {
+      expect(rsvpSummary(1, Number.MAX_SAFE_INTEGER)).toBe(
+        "1 going · 9007199254740990 spots left",
+      );
+    });
+
+    it("accepts MAX_SAFE_INTEGER as both count and capacity", () => {
+      expect(
+        rsvpSummary(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER),
+      ).toBe("Full (9007199254740991 going)");
+    });
+  });
+
   it("is pure: repeated calls with the same input return the same string", () => {
     expect(rsvpSummary(4, 9)).toBe(rsvpSummary(4, 9));
     expect(rsvpSummary(0)).toBe(rsvpSummary(0));
