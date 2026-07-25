@@ -34,7 +34,23 @@ function gh(args) { return execFileSync('gh', args, { cwd: CWD, encoding: 'utf8'
 function out(o) { process.stdout.write(JSON.stringify(o, null, 2) + '\n'); }
 const sleep = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }; // synchronous block
 
-const [, , cmd, branch, ...rest] = process.argv;
+// Positional args must be read with the FLAGS REMOVED. Taking them by raw index meant
+// `migration-diff <branch> --cwd <dir>` bound the path to the literal string "--cwd": the diff
+// then matched nothing and the step reported `hasMigration:false` with exit 0. That is a false
+// negative on the migration safety gate — the back gate concludes the branch carries no schema
+// change and skips the screen entirely. Flags may appear anywhere, so strip them first.
+const FLAGS_WITH_VALUE = new Set(['--cwd', '--timeout-min', '--interval-sec', '--require']);
+function positionals(argv) {
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (FLAGS_WITH_VALUE.has(a)) { i++; continue; }     // skip the flag AND its value
+    if (a.startsWith('--')) continue;                    // unknown/boolean flag
+    out.push(a);
+  }
+  return out;
+}
+const [cmd, branch, ...rest] = positionals(process.argv.slice(2));
 if (!cmd) fail(2, 'usage: node jig-step.mjs <rebase|push|ci-wait|migration-diff> <branch> ...');
 
 // The jig runs one branch at a time in its own worktree, and `git rebase`/`git push` act on

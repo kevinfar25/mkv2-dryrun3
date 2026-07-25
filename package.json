@@ -13,7 +13,11 @@
     "migrate": "node scripts/migrate.mjs",
     "seed": "node scripts/migrate.mjs --seed",
     "check:migrations": "node scripts/check-migrations.mjs",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "gen:migrations": "node scripts/gen-migrations.mjs",
+    "prod:migrate:status": "node scripts/prod-migrate.mjs --status",
+    "prod:migrate:dry": "node scripts/prod-migrate.mjs --dry-run",
+    "prod:migrate:apply": "node scripts/prod-migrate.mjs --apply"
   },
   "dependencies": {
     "next": "^16.1.4",

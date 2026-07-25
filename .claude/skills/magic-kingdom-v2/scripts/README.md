@@ -21,6 +21,7 @@ clean exit codes.
 | `ledger.mjs` | the gate ledger + its ONE invariant | `init/set/get/done/validate/render` on a `ledger.json`; gates are gated, `--counters` (e.g. `refit`) are not | 0 · 1 invariant violated · 2 usage |
 | `migration-safety.mjs` | static expand-only + version-prefix screen | `<file.sql…> [--registry prefixes.txt]` → `{violations, notes}` JSON | 0 clean · 1 violation · 2 usage |
 | `jig-step.mjs` | git/gh jig mechanics | `rebase/push/ci-wait/migration-diff <branch>` → step JSON | 0 ok · 1 conflict/red/missing-required/head-moved · 2 usage/no-PR · 4 ci timeout |
+| `selftest.mjs` | TIER 0 regression suite for the four above | `[--verbose]` → per-check results | 0 all pass · 1 any failure |
 
 Invariants these enforce so the AI can't drift off them:
 - **wave-plan**: two phases share a file ⇒ that is a DEPENDENCY, not just a wave split. The
@@ -47,6 +48,15 @@ Invariants these enforce so the AI can't drift off them:
   gate — the gate still judges them. Measured on this repo's 76 migrations: 68 clean, 8 flagged,
   all 8 real (a `DROP TABLE`, a permanently-dropped function, a dropped pkey, a `SET NOT NULL`,
   and policies dropped without recreation).
+- **selftest**: run it before every dry run and after every edit to these scripts —
+  `node .claude/skills/magic-kingdom-v2/scripts/selftest.mjs`. Fast (seconds) and fully OFFLINE:
+  no network, no `gh`, no database, fixtures generated into a temp dir. Each case is pinned to the
+  specific failure it prevents, because **a regression in any of these guards is silent** — the run
+  still goes green, it simply stops checking the thing it claims to check. It earned its keep on the
+  first run by catching a live false negative: `migration-diff <branch> --cwd <dir>` bound `<path>`
+  to the literal string `"--cwd"`, so the diff matched nothing and the step reported
+  `hasMigration:false` with exit 0 — which makes the back gate skip the migration safety screen
+  entirely. Positional args are now read with flags stripped.
 - **jig-step**: `rebase` refuses a dirty tree and aborts cleanly on conflict; `push` is always
   `--force-with-lease`; `migration-diff` is the ground-truth "does this branch touch the migration
   path" the back-gate keys on. `ci-wait` is the **anti-stale-green** step: `gh pr checks` never says
