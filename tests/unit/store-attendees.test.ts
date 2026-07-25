@@ -81,8 +81,17 @@ describe("listAttendees", () => {
     query.mockResolvedValue([
       { name: "Ada", created_at: new Date("2026-07-25T10:00:00.000Z") },
     ]);
+    // X1 added sessionId/checkedInAt/rsvpedAt to Attendee. The mocked row deliberately keeps
+    // the PRE-X1 column set, so this also pins the null-safe defaults for a database where the
+    // new columns do not exist yet.
     await expect(listAttendees(1)).resolves.toEqual([
-      { name: "Ada", createdAt: "2026-07-25T10:00:00.000Z" },
+      {
+        name: "Ada",
+        createdAt: "2026-07-25T10:00:00.000Z",
+        rsvpedAt: "2026-07-25T10:00:00.000Z",
+        sessionId: null,
+        checkedInAt: null,
+      },
     ]);
   });
 
@@ -91,7 +100,13 @@ describe("listAttendees", () => {
       { name: "Grace", created_at: "2026-07-25T09:00:00.000Z" },
     ]);
     await expect(listAttendees(1)).resolves.toEqual([
-      { name: "Grace", createdAt: "2026-07-25T09:00:00.000Z" },
+      {
+        name: "Grace",
+        createdAt: "2026-07-25T09:00:00.000Z",
+        rsvpedAt: "2026-07-25T09:00:00.000Z",
+        sessionId: null,
+        checkedInAt: null,
+      },
     ]);
   });
 

@@ -5,8 +5,24 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+// Type-only import: erased at compile time, so this client component never pulls lib/db in.
+import type { SessionSummary } from "@/lib/store";
 
-export default function RsvpForm({ eventId }: { eventId: number }) {
+export type RsvpFormProps = {
+  eventId: number;
+  /**
+   * X1 plumbing — the event's sessions, already aggregated by listSessions and passed down by
+   * the server page. OPTIONAL so any caller that has not been updated still type-checks.
+   * Accepted and rendered NOWHERE yet: X2 owns the picker UI that consumes it. Keeping the
+   * prop here means X2 never has to touch app/events/[id]/page.tsx (X3's file).
+   */
+  sessions?: SessionSummary[];
+};
+
+export default function RsvpForm({ eventId, sessions }: RsvpFormProps) {
+  // Referenced, not rendered — the prop is part of the contract now; X2 replaces this line
+  // with the picker. `void` keeps the no-unused-vars rule honest without inventing markup.
+  void sessions;
   const router = useRouter();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);

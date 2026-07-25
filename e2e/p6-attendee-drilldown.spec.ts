@@ -95,6 +95,8 @@ function makeEvent(title: string): number {
 function dropEvent(id: number) {
   if (!Number.isInteger(id) || id < 1) return;
   psql(`delete from attendees where event_id = ${id}`);
+  // X1 adds `sessions`, a child of events with a plain FK — clear it before the parent.
+  psql(`delete from sessions where event_id = ${id}`);
   psql(`delete from events where id = ${id}`);
 }
 
