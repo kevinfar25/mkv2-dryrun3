@@ -64,6 +64,8 @@ create table if not exists waitlist (
   created_at timestamptz not null default now()
 );
 create unique index if not exists waitlist_event_name_uniq on waitlist (event_id, lower(name));
+-- touched to force a new head SHA for injection 4
+-- injection 4, tight race
 `,
   },
 ];

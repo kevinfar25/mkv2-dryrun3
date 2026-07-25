@@ -41,7 +41,3 @@ export function rsvpSummary(count: number, capacity?: number): string {
   return `${goingText} · ${cap - going} spots left`;
 }
 
-// INJECTED for the dry run: an explicit `any` reddens `lint` while typecheck/test/build stay green.
-export function injectedLintOffender(x: any) {
-  return x;
-}
