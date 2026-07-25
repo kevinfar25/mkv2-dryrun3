@@ -10,6 +10,10 @@ const baseURL = process.env.BASE_URL || `http://localhost:${PORT}`;
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
+  // Serial: every spec drives the SAME database, and several of them create/delete events
+  // and snapshot the list by position. Running spec files in parallel makes those tests
+  // observe each other's writes and fail.
+  workers: 1,
   expect: { timeout: 10_000 },
   use: { baseURL, trace: "on-first-retry" },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
