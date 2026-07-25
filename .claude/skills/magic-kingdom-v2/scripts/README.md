@@ -17,25 +17,44 @@ clean exit codes.
 
 | Script | Owns | Input → Output | Exit |
 |---|---|---|---|
-| `wave-plan.mjs` | build waves + install order | `{phases:[{id,files,deps,migration,planIndex}]}` → `{collisions,waves,installOrder}` | 0 · 2 bad input · 3 cycle |
-| `ledger.mjs` | the gate ledger + its ONE invariant | `init/set/get/done/validate/render` on a `ledger.json` | 0 · 1 invariant violated · 2 usage |
-| `migration-safety.mjs` | static expand-only + version-prefix screen | `<file.sql…> [--registry prefixes.txt]` → violations JSON | 0 clean · 1 violation · 2 usage |
-| `jig-step.mjs` | git/gh jig mechanics | `rebase/push/ci-wait/migration-diff <branch>` → step JSON | 0 ok · 1 conflict/red · 2 usage · 4 ci timeout |
+| `wave-plan.mjs` | build waves + install order + **build bases** | `{phases:[{id,files,deps,migration,planIndex}]}` → `{collisions,collisionDeps,effectiveDeps,buildBases,waves,installOrder}` | 0 · 2 bad input · 3 cycle |
+| `ledger.mjs` | the gate ledger + its ONE invariant | `init/set/get/done/validate/render` on a `ledger.json`; gates are gated, `--counters` (e.g. `refit`) are not | 0 · 1 invariant violated · 2 usage |
+| `migration-safety.mjs` | static expand-only + version-prefix screen | `<file.sql…> [--registry prefixes.txt]` → `{violations, notes}` JSON | 0 clean · 1 violation · 2 usage |
+| `jig-step.mjs` | git/gh jig mechanics | `rebase/push/ci-wait/migration-diff <branch>` → step JSON | 0 ok · 1 conflict/red/missing-required/head-moved · 2 usage/no-PR · 4 ci timeout |
 
 Invariants these enforce so the AI can't drift off them:
-- **wave-plan**: two phases share a file ⇒ never the same build wave; deps ⇒ never same/earlier
-  wave; install order is a real topological sort, migrations pulled earliest, deterministic
-  tiebreak on `planIndex`. The AI supplies the per-phase file map (judgment); the grouping is math.
-- **ledger**: a phase is `done` **only** if every gate cell begins with `PASS`. `done` refuses
+- **wave-plan**: two phases share a file ⇒ that is a DEPENDENCY, not just a wave split. The
+  collision becomes a real edge (oriented earlier-plan-phase-first, skipped when explicit deps
+  already order the pair), so the later phase's `buildBase` is its sibling's branch rather than
+  bare `origin/main`. Without that, the deferred phase builds without the shared file's edits: it
+  may not compile, and it is guaranteed to conflict when the jig rebases it after the sibling
+  merges — burning the ≤2 refit budget on the exact clash the wave split existed to prevent.
+  Install order is a real topological sort over the effective deps, migrations pulled earliest,
+  deterministic tiebreak on `planIndex`. `buildBases` is transitively reduced, so an integration
+  branch appears only when the deps are genuinely independent. The AI supplies the per-phase file
+  map (judgment); every ordering decision downstream of it is math.
+- **ledger**: a phase is `done` **only** if every GATE cell begins with `PASS`. `done` refuses
   otherwise (exit 1); `validate` re-checks every done phase. "A blank cell = gate not run = not
-  done" is now mechanical, not a promise.
+  done" is now mechanical, not a promise. **Gates vs counters:** `refit` is the FIXER BUDGET
+  ("1/2"), which never begins with `PASS` — as a gate it would make `done` permanently impossible,
+  so it belongs in `--counters` and `init` refuses it in `--gates` with that explanation.
 - **migration-safety**: a **necessary, not sufficient** screen. A FAIL blocks. A PASS still hands
   off to the full gate (staging dry-run + LIVE prod-schema check + expand/contract reasoning) — it
-  only removes the unambiguously-destructive cases cheaply and up front.
+  only removes the unambiguously-destructive cases cheaply and up front. Because a FAIL *blocks*,
+  precision beats recall: it screens statement-by-statement, masks `$$ … $$` bodies, skips
+  GRANT/REVOKE, and treats `DROP … IF EXISTS` + re-create in the same file as a **note**. Notes
+  (scoped `UPDATE`/`DELETE` backfills, idempotent recreates) are exit 0 but are NOT a pass of the
+  gate — the gate still judges them. Measured on this repo's 76 migrations: 68 clean, 8 flagged,
+  all 8 real (a `DROP TABLE`, a permanently-dropped function, a dropped pkey, a `SET NOT NULL`,
+  and policies dropped without recreation).
 - **jig-step**: `rebase` refuses a dirty tree and aborts cleanly on conflict; `push` is always
-  `--force-with-lease`; `ci-wait` resolves the PR **head SHA** and reports it, so CI is verified on
-  the *rebased* commit, not a stale run; `migration-diff` is the ground-truth "does this branch
-  touch the migration path" the back-gate keys on.
+  `--force-with-lease`; `migration-diff` is the ground-truth "does this branch touch the migration
+  path" the back-gate keys on. `ci-wait` is the **anti-stale-green** step: `gh pr checks` never says
+  which COMMIT a check ran on, so the pre-rebase run reads as green right after a force-push.
+  ci-wait instead asks the commit — `commits/<head>/check-runs` + legacy `/status` — refuses to call
+  an EMPTY check set green, aborts if the head SHA moves mid-wait, and with `--require <names>`
+  refuses green unless every required check is PRESENT and successful on that SHA (which also
+  catches a renamed CI job detached from the branch ruleset).
 
 ## Still AI (judgment — do NOT script)
 
