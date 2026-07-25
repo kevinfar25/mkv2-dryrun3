@@ -225,8 +225,12 @@ describe("the X1 demo-session fixture predicate (migration)", () => {
           const matched = rows.filter((r) => matches(conditions, r, seed));
           expect(matched.length).toBeGreaterThan(0);
         }
-        // Team Offsite Planning keeps its three sessions (two at the same starts_at), Open Source
-        // Meetup its one, and Quarterly Demo Day still gets ZERO.
+        // Counts from THIS statement only: Team Offsite Planning three (two at the same
+        // starts_at), Open Source Meetup one, Quarterly Demo Day none. ⚠ Zero DEMO sessions is
+        // not zero sessions — the legacy backfill above is unconditional over events, so
+        // Quarterly Demo Day still ends up with exactly one, "General Admission". See the
+        // dedicated legacy-backfill test below; X3's zero-session surface is an event created
+        // AFTER this migration applied, never this one.
         const counts = SEED_EVENT_ROWS.map(
           (seed) => rows.filter((r) => matches(conditions, r, seed)).length,
         );
@@ -250,6 +254,62 @@ describe("the X1 demo-session fixture predicate (migration)", () => {
           expect(identity).toContain(seed.startsAt);
           expect(identity).toContain(seed.location);
         }
+      });
+    });
+  }
+});
+
+// The legacy General Admission backfill is what makes "zero DEMO sessions" different from "zero
+// sessions". It is deliberately unconditional over `events` — that is the fix for the
+// first-attendee gap, and the reconciliation pass depends on every pre-existing event having a
+// General Admission session to attribute to. So it MUST NOT grow a predicate that excludes an
+// event (an attendee filter, a title exclusion). This test pins that, and pins the consequence:
+// Quarterly Demo Day ends up with exactly one session, so X3's zero-session surface has to be an
+// event created after this migration applied.
+describe("the X1 legacy General Admission backfill", () => {
+  const sources: [string, string][] = [
+    ["SCHEMA_SQL", SCHEMA_SQL],
+    ["db/migrations/20260727010000_sessions_checkin.sql", readFileSync(MIGRATION_PATH, "utf8")],
+  ];
+
+  for (const [label, sql] of sources) {
+    describe(label, () => {
+      const start = sql.indexOf("-- LEGACY BACKFILL");
+      const insertAt = sql.indexOf("insert into sessions", start);
+      const end = sql.indexOf("on conflict do nothing;", insertAt);
+      const statement = sql.slice(insertAt, end);
+
+      it("is present and selects straight from events", () => {
+        expect(start).toBeGreaterThan(-1);
+        expect(end).toBeGreaterThan(insertAt);
+        expect(statement).toMatch(/from\s+events\s+e/);
+        expect(statement).toContain("'General Admission'");
+      });
+
+      it("is gated ONLY on the idempotency guard — never on attendees or a title exclusion", () => {
+        // The single `where not exists (...)` is the idempotency guard on sessions. Anything else
+        // in the predicate would leave some event without a General Admission session.
+        const where = statement.slice(statement.indexOf(" where "));
+        expect(where.match(/not exists/g)).toHaveLength(1);
+        expect(where).toMatch(/from\s+sessions\s+s/);
+        expect(where).not.toMatch(/attendees/);
+        expect(where).not.toMatch(/e\.title/);
+        expect(where).not.toMatch(/Quarterly Demo Day/);
+        // No extra TOP-LEVEL conjunct: with the subquery's parenthesised body removed, the
+        // outer predicate is just `where not exists (…)` and nothing else.
+        const outer = where.slice(0, where.indexOf("(") + 1) + where.slice(where.lastIndexOf(")"));
+        expect(outer.replace(/\s+/g, " ").trim()).toBe("where not exists ()");
+      });
+
+      it("therefore gives EVERY pre-existing event a session, Quarterly Demo Day included", () => {
+        const demoDay = SEED_EVENT_ROWS.find((e) => e.title === "Quarterly Demo Day");
+        expect(demoDay, "Quarterly Demo Day is still a seed event").toBeTruthy();
+        // It gets zero rows from the demo fixture...
+        const { rows, conditions } = parseFixture(sql);
+        const fromFixture = rows.filter((r) => matches(conditions, r, demoDay!));
+        expect(fromFixture).toEqual([]);
+        // ...and exactly one from this unconditional backfill. Zero demo sessions, one session.
+        expect(statement).not.toMatch(/limit\s+\d/);
       });
     });
   }

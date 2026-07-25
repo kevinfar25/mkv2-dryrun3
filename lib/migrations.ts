@@ -168,8 +168,15 @@ update attendees
 -- the normal case, so this is a no-op unless the actual seed events are present.
 --   · "Team Offsite Planning" gets TWO sessions at the SAME starts_at (the title tiebreak X3
 --     asserts) plus a later one, and one of them has a NULL room.
---   · "Quarterly Demo Day" is deliberately left with ZERO sessions — X3 must prove that page
---     renders exactly as it does today.
+--   · "Quarterly Demo Day" gets NO demo session here. Note carefully what that does and does
+--     NOT mean: the legacy backfill ABOVE is deliberately unconditional over events, so every
+--     event that exists when this migration applies — Quarterly Demo Day included — ends up
+--     with exactly one session, "General Admission". This statement adds none to it, so it is
+--     the MULTI-session demo surface it stays out of, not the one-session one. X3's
+--     zero-session assertion therefore cannot use Quarterly Demo Day: it must drive an event
+--     CREATED AFTER this migration applied. That is always available, because this migration
+--     is ledger-recorded and runs exactly once, so nothing ever backfills a session into an
+--     event created later.
 -- Titles cannot collide case-insensitively with the legacy General Admission session above,
 -- so an event may safely carry both.
 insert into sessions (event_id, title, starts_at, room)
