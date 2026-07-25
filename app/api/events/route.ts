@@ -6,9 +6,20 @@ import { parseEventInput } from "@/lib/validation";
 // in lib/db.ts is lazy for the same reason.
 export const dynamic = "force-dynamic";
 
+const UNAVAILABLE = { error: "events are temporarily unavailable" };
+
 /** Newest first — the ordering is store-side (single query, no per-row fan-out). */
 export async function GET() {
-  const events = await listEvents();
+  // Narrow on purpose: only the DB call is wrapped, so an unreachable database degrades to
+  // a 503 instead of an unhandled 500. The error is still logged, not swallowed.
+  let events;
+  try {
+    events = await listEvents();
+  } catch (error) {
+    console.error("GET /api/events failed", error);
+    return NextResponse.json(UNAVAILABLE, { status: 503 });
+  }
+
   return NextResponse.json({ events });
 }
 
@@ -28,6 +39,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "invalid input", errors: parsed.errors }, { status: 400 });
   }
 
-  const event = await createEvent(parsed.data);
+  // Same narrow wrap as GET — the 400 validation path above is untouched.
+  let event;
+  try {
+    event = await createEvent(parsed.data);
+  } catch (error) {
+    console.error("POST /api/events failed", error);
+    return NextResponse.json(UNAVAILABLE, { status: 503 });
+  }
+
   return NextResponse.json({ event }, { status: 201 });
 }
