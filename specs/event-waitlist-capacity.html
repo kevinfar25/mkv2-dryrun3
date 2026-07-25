@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan: Event Waitlist &amp; Capacity</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a22; --ink: #e6e8ee; --muted: #9aa3b2;
+    --accent: #6c8cff; --amber: #f5b544; --green: #4bd07f; --red: #ff6b6b;
+    --line: #262b36; --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f7f8fa; --panel:#fff; --ink:#1a1d24; --muted:#5a6373; --line:#e3e6ec; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font-family: system-ui, -apple-system, sans-serif; line-height:1.55; }
+  main { max-width: 940px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+  h1 { font-family:var(--mono); font-size:1.9rem; letter-spacing:-.02em; margin:0 0 .3rem; }
+  h2 { font-family:var(--mono); font-size:1.25rem; margin:2.4rem 0 .8rem;
+    border-bottom:1px solid var(--line); padding-bottom:.4rem; }
+  h3 { font-family:var(--mono); font-size:1rem; margin:1.4rem 0 .5rem; color:var(--accent); }
+  code, .mono { font-family:var(--mono); font-size:.86em; }
+  .meta dl { display:grid; grid-template-columns:auto 1fr; gap:.15rem .8rem; font-size:.82rem; color:var(--muted); }
+  .meta dt { font-family:var(--mono); }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:1.1rem 1.3rem; margin:1rem 0; }
+  .phase { border-left:3px solid var(--accent); }
+  .phase.mig { border-left-color:var(--amber); }
+  .tag { display:inline-block; font-family:var(--mono); font-size:.68rem; text-transform:uppercase;
+    letter-spacing:.05em; padding:.12rem .5rem; border-radius:20px; border:1px solid var(--line);
+    color:var(--muted); margin-right:.35rem; }
+  .tag.mig { color:var(--amber); border-color:var(--amber); }
+  .tag.indep { color:var(--green); border-color:var(--green); }
+  .tag.dep { color:var(--accent); border-color:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:.85rem; margin:.5rem 0; }
+  th,td { text-align:left; padding:.4rem .6rem; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-family:var(--mono); font-size:.75rem; text-transform:uppercase; }
+  .files td:first-child { font-family:var(--mono); white-space:nowrap; }
+  .new { color:var(--green); } .edit { color:var(--amber); }
+  .exit { background:rgba(108,140,255,.08); border:1px dashed var(--accent); border-radius:8px;
+    padding:.6rem .9rem; font-size:.86rem; margin:.7rem 0; }
+  ul { margin:.4rem 0; padding-left:1.2rem; } li { margin:.2rem 0; }
+  .legend { font-size:.8rem; color:var(--muted); }
+  .none { color:var(--green); font-weight:600; }
+  .warn { border-left:3px solid var(--amber); }
+</style>
+</head>
+<body>
+<main>
+
+  <header>
+    <h1>Plan: Event Waitlist &amp; Capacity</h1>
+    <p class="legend">Second build plan for <code>mkv2-dryrun3</code> — the throwaway UI-bearing
+      Next.js + Postgres sandbox used to dry-run Magic Kingdom V2 end to end. Builds on top of the
+      Event RSVP board delivered by the first run. Status markers:
+      <code>[]</code> todo · <code>[wip]</code> in progress · <code>[x]</code> done · <code>[f]</code> failed.</p>
+    <details class="meta" open>
+      <summary>Metadata</summary>
+      <dl>
+        <dt>created</dt>      <dd>2026-07-25T00:00:00Z</dd>
+        <dt>modified</dt>     <dd>2026-07-25T00:00:00Z</dd>
+        <dt>agent name</dt>   <dd>claude-opus-5</dd>
+        <dt>session id</dt>   <dd>mkv2-dryrun3-02</dd>
+        <dt>back refs</dt>    <dd>event-rsvp-board (run 1, phases P1–P6, all installed)</dd>
+        <dt>forward refs</dt> <dd>DRYRUN-INJECTION-SHEET.md (observer script — NOT input to the run)</dd>
+      </dl>
+    </details>
+  </header>
+
+  <section id="purpose">
+    <h2>Purpose</h2>
+    <p>Add <b>capacity limits and a waitlist</b> to the existing Event RSVP board: an event can
+      declare how many places it has, RSVPs beyond that go to a waitlist in join order, the events
+      list shows how full each event is, and a small stats endpoint summarises the whole board.</p>
+    <p>The phase shape is deliberate. Four phases, <b>two collision pairs</b> and <b>one
+      migration</b>: W1↔W2 both edit <code>lib/store.ts</code>, W3↔W4 both edit
+      <code>lib/format.ts</code>, and W1 carries the schema change. That produces two build waves
+      with real inferred dependencies rather than a flat fan-out, so the orchestrator has to get
+      build bases, install order and the migration-first rule right — not just run four agents in
+      parallel.</p>
+    <p class="legend"><b>Schema-on-Vercel note (load-bearing for the migration gate):</b> the hosted
+      Neon <code>DATABASE_URL</code> is marked Sensitive, so it cannot be pulled to a laptop and the
+      hosted DB cannot be migrated from outside. The <b>atomic migration runner</b> is
+      <code>npm run prod:migrate:apply</code> (<code>scripts/prod-migrate.mjs</code> →
+      <code>POST /api/migrate</code>), which applies each migration's SQL and its
+      <code>schema_migrations</code> row <b>in one transaction</b>. Read-only drift report:
+      <code>npm run prod:migrate:status</code>. Every schema-adding phase does three things:
+      (a) add a well-named <code>db/migrations/*.sql</code>, (b) extend <code>SCHEMA_SQL</code> in
+      <code>lib/schema.ts</code> to match, (c) run <code>npm run gen:migrations</code>. Two tests
+      fail CI if any of the three drift.</p>
+    <p class="legend"><b>Never</b> apply schema with <code>psql -f</code>, and never via
+      <code>POST /api/setup</code> — that route applies all of <code>SCHEMA_SQL</code> and records
+      nothing, which leaves the ledger claiming live migrations are still pending.</p>
+  </section>
+
+  <section id="decisions">
+    <h2>⚠ Decisions Required</h2>
+    <ul><li class="none">None. Every phase below has a concrete file set, test command and exit
+      condition. Do not re-ask.</li></ul>
+  </section>
+
+  <section id="graph" class="warn">
+    <h2>Dependency shape (derive it, do not assume it)</h2>
+    <p>Run <code>node .claude/skills/magic-kingdom-v2/scripts/wave-plan.mjs &lt;manifest&gt;</code>
+      and use its <code>buildBases</code> verbatim. For reference, the expected answer is:</p>
+    <table>
+      <tr><th>Phase</th><th>Touches</th><th>Effective deps</th><th>Build base</th><th>Wave</th></tr>
+      <tr><td>W1</td><td><code>lib/store.ts</code>, schema</td><td>—</td><td><code>origin/main</code></td><td>1</td></tr>
+      <tr><td>W2</td><td><code>lib/store.ts</code></td><td>W1 <span class="tag dep">inferred</span></td><td><code>branch:W1</code></td><td>2</td></tr>
+      <tr><td>W3</td><td><code>lib/format.ts</code></td><td>—</td><td><code>origin/main</code></td><td>1</td></tr>
+      <tr><td>W4</td><td><code>lib/format.ts</code></td><td>W3 <span class="tag dep">inferred</span></td><td><code>branch:W3</code></td><td>2</td></tr>
+    </table>
+    <p class="legend">Neither W2→W1 nor W4→W3 is written as an explicit dependency anywhere in this
+      plan. They are <b>inferred from the shared file</b>, and they matter: a W2 built on bare
+      <code>origin/main</code> would not contain W1's <code>lib/store.ts</code> changes, would
+      likely not compile, and would be guaranteed to conflict when rebased after W1 merges.
+      Install order is <code>W1 → W2 → W3 → W4</code>, with the migration-bearing phase first.</p>
+  </section>
+
+  <h2>Phases</h2>
+
+  <!-- ============ W1 ============ -->
+  <section class="phase mig" id="w1" data-phase="W1" data-deps="" data-migration="true">
+    <h3>[] W1 — Capacity + waitlist schema and store <span class="tag mig">⚠ migration</span><span class="tag">foundational</span></h3>
+    <p>Give events a capacity and add the waitlist table the later phases read. This is the only
+      phase that touches the database.</p>
+    <ul>
+      <li>Add <code>events.capacity integer</code> — nullable, meaning "no limit". Existing rows keep
+        no limit, so the board behaves exactly as it does today until a capacity is set.</li>
+      <li>Add a <code>waitlist</code> table: <code>id</code>, <code>event_id</code> (FK to events),
+        <code>name text not null</code>, <code>position integer not null</code>,
+        <code>created_at</code>. Case-insensitive uniqueness of <code>(event_id, name)</code> as an
+        expression index, matching how <code>attendees</code> already does it.</li>
+      <li><b>Venue field.</b> <code>events.location</code> is a free-text field that has become a
+        dumping ground ("Online — video link in invite"). Introduce a structured
+        <code>venue text</code> column and move the board onto it, so the list and detail pages read
+        <code>venue</code>. Existing rows must keep working.</li>
+      <li>In <code>lib/store.ts</code>: extend the event row type and <code>listEvents()</code> to
+        carry <code>capacity</code> and <code>venue</code>, and add
+        <code>countWaitlist(eventId)</code>.</li>
+      <li>Mirror the DDL into <code>SCHEMA_SQL</code> and run <code>npm run gen:migrations</code>.</li>
+    </ul>
+    <table class="files">
+      <tr><th>File</th><th>Change</th></tr>
+      <tr><td>db/migrations/20260726010000_capacity_waitlist.sql</td><td class="new">new</td></tr>
+      <tr><td>lib/schema.ts</td><td class="edit">edit — mirror the DDL</td></tr>
+      <tr><td>lib/store.ts</td><td class="edit">edit — row type, listEvents, countWaitlist</td></tr>
+      <tr><td>lib/migrations.ts</td><td class="edit">regenerated</td></tr>
+    </table>
+    <div class="exit"><b>Exit:</b> <code>npm run check:migrations</code>, <code>npm test</code>,
+      <code>npx tsc --noEmit</code> and <code>npm run lint</code> all clean; the static migration
+      screen (<code>migration-safety.mjs</code>) reports <b>zero violations</b>; the migration is
+      expand-only and safe to apply while the currently-deployed code is still running.</div>
+  </section>
+
+  <!-- ============ W2 ============ -->
+  <section class="phase" id="w2" data-phase="W2" data-deps="" data-migration="false">
+    <h3>[] W2 — Waitlist join/leave API <span class="tag dep">shares lib/store.ts with W1</span></h3>
+    <p>Make the waitlist usable: RSVPing to a full event puts you on the waitlist instead of
+      failing.</p>
+    <ul>
+      <li><code>POST /api/events/[id]/waitlist</code> — add a name to the waitlist at the next
+        position. <code>DELETE</code> — remove a name and close the gap so positions stay contiguous.</li>
+      <li>Position assignment must be safe under concurrent requests: two simultaneous joins must
+        not receive the same position. Follow the advisory-lock pattern already used by
+        <code>/api/setup</code>.</li>
+      <li>In <code>lib/store.ts</code>: <code>joinWaitlist</code>, <code>leaveWaitlist</code>,
+        <code>listWaitlist(eventId)</code>. In <code>lib/validation.ts</code>: a Zod body schema
+        reusing the existing name rules (trimmed, non-empty, length-capped).</li>
+      <li>An event with <code>capacity = null</code> has no waitlist — joining returns 409.</li>
+    </ul>
+    <table class="files">
+      <tr><th>File</th><th>Change</th></tr>
+      <tr><td>app/api/events/[id]/waitlist/route.ts</td><td class="new">new</td></tr>
+      <tr><td>lib/store.ts</td><td class="edit">edit — join/leave/list</td></tr>
+      <tr><td>lib/validation.ts</td><td class="edit">edit — waitlist body schema</td></tr>
+    </table>
+    <div class="exit"><b>Exit:</b> unit tests cover position contiguity after a mid-list removal and
+      the capacity-null 409; all four CI gates clean; a real-browser or HTTP check against the
+      deployed app shows a join, a second join at position 2, and a removal that renumbers.</div>
+  </section>
+
+  <!-- ============ W3 ============ -->
+  <section class="phase" id="w3" data-phase="W3" data-deps="" data-migration="false">
+    <h3>[] W3 — Capacity badge on the events list <span class="tag">UI</span></h3>
+    <p>Show how full each event is, on the list at <code>/</code>.</p>
+    <ul>
+      <li>Per event, render attendees against capacity: <code>12 / 20</code>, plus
+        <code>Full</code> when at capacity and <code>3 waiting</code> when a waitlist exists.
+        An event with no capacity shows just the attendee count, as today.</li>
+      <li>In <code>lib/format.ts</code>: a pure <code>formatCapacity({attendees, capacity,
+        waiting})</code> returning the label. Pure and fully unit-tested — no DB, no React.</li>
+      <li>Edge cases that must be explicit in tests: capacity 0, attendees over capacity
+        (over-subscribed historical rows), and a null waiting count.</li>
+    </ul>
+    <table class="files">
+      <tr><th>File</th><th>Change</th></tr>
+      <tr><td>app/page.tsx</td><td class="edit">edit — render the badge</td></tr>
+      <tr><td>lib/format.ts</td><td class="edit">edit — formatCapacity</td></tr>
+    </table>
+    <div class="exit"><b>Exit:</b> unit tests for every edge case above; all four CI gates clean;
+      a real browser on the deployed app shows the badge on a seeded event.</div>
+  </section>
+
+  <!-- ============ W4 ============ -->
+  <section class="phase" id="w4" data-phase="W4" data-deps="" data-migration="false">
+    <h3>[] W4 — Board stats endpoint <span class="tag dep">shares lib/format.ts with W3</span></h3>
+    <p>One read-only summary of the whole board.</p>
+    <ul>
+      <li><code>GET /api/stats</code> → total events, total attendees, total waitlisted, how many
+        events are full, and the next upcoming event's title and formatted start time.</li>
+      <li>In <code>lib/format.ts</code>: reuse the existing date formatter and add
+        <code>formatBoardSummary()</code> producing the human sentence the endpoint also returns.</li>
+      <li>Must not fail when the board is empty — zeros and a null next event, HTTP 200.</li>
+    </ul>
+    <table class="files">
+      <tr><th>File</th><th>Change</th></tr>
+      <tr><td>app/api/stats/route.ts</td><td class="new">new</td></tr>
+      <tr><td>lib/format.ts</td><td class="edit">edit — formatBoardSummary</td></tr>
+    </table>
+    <div class="exit"><b>Exit:</b> unit tests including the empty-board case; all four CI gates
+      clean; <code>GET /api/stats</code> on the deployed app returns counts consistent with
+      <code>/api/events</code>.</div>
+  </section>
+
+  <section id="gates">
+    <h2>Gates every phase must clear</h2>
+    <table>
+      <tr><th>Gate</th><th>How</th></tr>
+      <tr><td>typecheck · test · build</td><td>required CI check</td></tr>
+      <tr><td>migration hygiene</td><td>required CI check</td></tr>
+      <tr><td>lint</td><td>required CI check — <b>0 problems</b>, the baseline is clean</td></tr>
+      <tr><td>migration safety</td><td><code>migration-safety.mjs</code> zero violations, then
+        expand/contract reasoning against the live schema</td></tr>
+      <tr><td>switch-on</td><td>the feature is reachable from the deployed UI/API, not just merged</td></tr>
+      <tr><td>functional</td><td>real browser or HTTP against the deployed app</td></tr>
+    </table>
+    <p class="legend">All three CI checks are <b>required</b> and the ruleset is strict, so every
+      merge puts the remaining open PRs <code>BEHIND</code> and each needs an explicit
+      <code>gh pr update-branch</code> before it can merge. Auto-merge will not do it —
+      <code>allow_update_branch</code> is false.</p>
+  </section>
+
+</main>
+</body>
+</html>
