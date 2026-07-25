@@ -89,6 +89,158 @@ test("a double submit creates exactly one event", async ({ page, request }) => {
   expect(body.events.filter((e) => e.title === title)).toHaveLength(1);
 });
 
+test("submits during the route transition still create exactly one event", async ({
+  page,
+  request,
+}) => {
+  // Regression for the NAVIGATION window specifically: App Router `router.push()` is async,
+  // so the form stays mounted and interactive after a successful POST. If the submit lock is
+  // released on the success path, a submit landing in that window creates a SECOND event.
+  const before = await eventCount(request);
+  const title = `P3 Nav Window ${Date.now()}`;
+
+  await page.goto("/new");
+  await page.getByTestId("create-title").fill(title);
+  await page.getByTestId("create-starts-at").fill("2026-09-15T18:30");
+  await page.getByTestId("create-location").fill("Valletta HQ — Room 2");
+
+  await page.getByTestId("create-form").evaluate((form: HTMLFormElement) => {
+    // Fire another submit the instant the POST response resolves — after the fetch settles
+    // but before `router.push()` has finished navigating. That is the exact race window.
+    const realFetch = window.fetch;
+    window.fetch = async (...args: Parameters<typeof fetch>) => {
+      const res = await realFetch(...args);
+      queueMicrotask(() => form.requestSubmit());
+      setTimeout(() => form.requestSubmit(), 0);
+      return res;
+    };
+
+    // …plus the same-task double submit, and a hammer across the whole transition.
+    form.requestSubmit();
+    form.requestSubmit();
+    for (let i = 1; i <= 40; i++) setTimeout(() => form.requestSubmit(), i * 50);
+  });
+
+  await page.waitForURL(/\/events\/\d+$/);
+  // Give any straggling in-flight resubmit time to have landed before counting.
+  await page.waitForTimeout(2000);
+
+  const after = await eventCount(request);
+  console.log(`[p3] nav-window resubmits: events before=${before} after=${after}`);
+  expect(after).toBe(before + 1);
+
+  const res = await request.get("/api/events");
+  const body = (await res.json()) as { events: { title: string }[] };
+  expect(body.events.filter((e) => e.title === title)).toHaveLength(1);
+});
+
+test("after a 400 the form recovers and submits successfully once corrected", async ({
+  page,
+  request,
+}) => {
+  // The success path holds the submit lock forever on purpose — this proves the FAILURE
+  // paths still release it, so a 400 does not wedge the form.
+  const before = await eventCount(request);
+  const title = `P3 Recovery After 400 ${Date.now()}`;
+
+  await page.goto("/new");
+  await page.getByTestId("create-title").fill("");
+  await page.getByTestId("create-starts-at").fill("2026-09-15T18:30");
+  await page.getByTestId("create-location").fill("Valletta HQ — Room 2");
+  await page.getByTestId("create-submit").click();
+
+  await expect(page.getByTestId("form-error")).toBeVisible();
+  await expect(page).toHaveURL(/\/new$/);
+  // The button must be interactive again, not stuck in "Creating…".
+  await expect(page.getByTestId("create-submit")).toBeEnabled();
+
+  await page.getByTestId("create-title").fill(title);
+  await page.getByTestId("create-submit").click();
+
+  await page.waitForURL(/\/events\/\d+$/);
+  await expect(page.getByTestId("event-title")).toHaveText(title);
+
+  const after = await eventCount(request);
+  console.log(`[p3] recovery after 400: events before=${before} after=${after}`);
+  expect(after).toBe(before + 1);
+});
+
+test("after a network error the form recovers and submits successfully", async ({
+  page,
+  request,
+}) => {
+  const before = await eventCount(request);
+  const title = `P3 Recovery After Network Error ${Date.now()}`;
+
+  // Kill only the FIRST POST, so the retry hits the real route.
+  let killed = false;
+  await page.route("**/api/events", async (route) => {
+    if (route.request().method() === "POST" && !killed) {
+      killed = true;
+      await route.abort("failed");
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto("/new");
+  await page.getByTestId("create-title").fill(title);
+  await page.getByTestId("create-starts-at").fill("2026-09-15T18:30");
+  await page.getByTestId("create-location").fill("Valletta HQ — Room 2");
+  await page.getByTestId("create-submit").click();
+
+  await expect(page.getByTestId("form-error")).toBeVisible();
+  await expect(page.getByTestId("create-submit")).toBeEnabled();
+
+  await page.getByTestId("create-submit").click();
+  await page.waitForURL(/\/events\/\d+$/);
+  await expect(page.getByTestId("event-title")).toHaveText(title);
+
+  const after = await eventCount(request);
+  console.log(`[p3] recovery after network error: events before=${before} after=${after}`);
+  expect(after).toBe(before + 1);
+});
+
+test("after a malformed response the form recovers and submits successfully", async ({
+  page,
+  request,
+}) => {
+  const title = `P3 Recovery After Malformed ${Date.now()}`;
+
+  // First POST answers 201 with an unusable id; the retry goes to the real route.
+  let mangled = false;
+  await page.route("**/api/events", async (route) => {
+    if (route.request().method() === "POST" && !mangled) {
+      mangled = true;
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ event: { id: "not-a-number" } }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto("/new");
+  await page.getByTestId("create-title").fill(title);
+  await page.getByTestId("create-starts-at").fill("2026-09-15T18:30");
+  await page.getByTestId("create-location").fill("Valletta HQ — Room 2");
+  await page.getByTestId("create-submit").click();
+
+  await expect(page.getByTestId("form-error")).toBeVisible();
+  await expect(page.getByTestId("create-submit")).toBeEnabled();
+
+  await page.getByTestId("create-submit").click();
+  await page.waitForURL(/\/events\/\d+$/);
+  await expect(page.getByTestId("event-title")).toHaveText(title);
+
+  // The intercepted first attempt never reached the DB, so exactly one row exists.
+  const res = await request.get("/api/events");
+  const body = (await res.json()) as { events: { title: string }[] };
+  expect(body.events.filter((e) => e.title === title)).toHaveLength(1);
+});
+
 test("typing into the title clears a server validation error", async ({ page }) => {
   await page.goto("/new");
   await page.getByTestId("create-title").fill("");

@@ -42,6 +42,16 @@ export default function NewEventPage() {
     setError(null);
   }
 
+  /**
+   * Show an inline error and hand the form back to the user. Only the failure paths call
+   * this: on success the lock stays engaged (see `onSubmit`).
+   */
+  function fail(message: string) {
+    setError(message);
+    submitting.current = false;
+    setPending(false);
+  }
+
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitting.current) return;
@@ -62,21 +72,23 @@ export default function NewEventPage() {
         // Flatten the route's field messages; fall back to the status so the inline error
         // is never blank.
         const detail = body?.errors?.length ? body.errors.join(", ") : body?.error;
-        setError(detail ?? `Could not create the event (${res.status})`);
+        fail(detail ?? `Could not create the event (${res.status})`);
         return;
       }
 
       const id = body?.event?.id;
       if (!isUsableEventId(id)) {
-        setError("Event created, but the response was malformed");
+        fail("Event created, but the response was malformed");
         return;
       }
+
+      // Deliberately do NOT release the lock or clear `pending` here. App Router navigation
+      // is async: this form stays mounted and interactive for the whole transition, so
+      // re-enabling it now opens a window in which another submit creates a SECOND event.
+      // The component unmounts when the route settles, which is what "releases" the lock.
       router.push(`/events/${id}`);
     } catch {
-      setError("Could not create the event — network error");
-    } finally {
-      submitting.current = false;
-      setPending(false);
+      fail("Could not create the event — network error");
     }
   }
 
