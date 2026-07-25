@@ -106,21 +106,18 @@ describe("formatSessionSlot", () => {
     });
   });
 
-  describe("two sessions at the same starts_at", () => {
-    // X1 seeded exactly this fixture. listSessions orders `starts_at asc, title asc, id asc`
-    // and the page maps over that array without re-sorting, so the render's ordering is the
-    // store's ordering. This pins both: the input order survives, and the labels line up
-    // with their own row rather than bleeding across the tie.
+  describe("two sessions at the same starts_at — the page preserves the order given", () => {
+    // Ordering is NOT this module's contract: listSessions owns it (`starts_at asc, title asc,
+    // id asc`). The page's only obligation is to map the array it was handed WITHOUT re-sorting,
+    // and each row's label must come from its own row rather than bleeding across the tie. So the
+    // fixture below is deliberately in an order the store would NEVER return — "Closing Notes"
+    // before "Budget Review" on an identical starts_at — and the assertion is that the mapping
+    // reproduces THAT order verbatim. A page (or formatter) that re-sorted by title, id or
+    // anything else would fail here; a pre-sorted fixture could not tell the difference.
+    // (The structural "the page does not .sort()" half of this lives in
+    // tests/unit/event-page-schedule.test.ts, which reads the component source.)
     const sameStart = "2026-08-04T17:00:00.000Z";
-    const ordered: SessionSummary[] = [
-      session({
-        id: 11,
-        title: "Budget Review",
-        startsAt: sameStart,
-        room: "Room 2",
-        attendeeCount: 2,
-        checkedInCount: 1,
-      }),
+    const asGiven: SessionSummary[] = [
       session({
         id: 9,
         title: "Closing Notes",
@@ -129,21 +126,35 @@ describe("formatSessionSlot", () => {
         attendeeCount: 0,
         checkedInCount: 0,
       }),
+      session({
+        id: 11,
+        title: "Budget Review",
+        startsAt: sameStart,
+        room: "Room 2",
+        attendeeCount: 2,
+        checkedInCount: 1,
+      }),
     ];
 
-    it("keeps the store's title-tiebroken order and labels each row from its own data", () => {
-      expect(ordered.map((s) => s.title)).toEqual([
-        "Budget Review",
-        "Closing Notes",
-      ]);
-      expect(ordered.map(slotOf)).toEqual([
-        "17:00 UTC · Room 2 · 1 of 2 checked in",
+    it("maps a tie in the order received, not in sorted order", () => {
+      // Guard the guard: the fixture must NOT already be in the store's order, or this test
+      // would pass against a re-sorting implementation.
+      const sortedTitles = [...asGiven.map((s) => s.title)].sort();
+      expect(asGiven.map((s) => s.title)).not.toEqual(sortedTitles);
+
+      expect(asGiven.map(slotOf)).toEqual([
         "17:00 UTC · Room TBA · No attendees yet",
+        "17:00 UTC · Room 2 · 1 of 2 checked in",
       ]);
     });
 
+    it("pairs each label with its own row, whichever order the rows arrive in", () => {
+      const reversed = [...asGiven].reverse();
+      expect(reversed.map(slotOf)).toEqual([...asGiven.map(slotOf)].reverse());
+    });
+
     it("gives both rows the same time, so the tie is a real one", () => {
-      const times = ordered.map((s) => slotOf(s).split(" · ")[0]);
+      const times = asGiven.map((s) => slotOf(s).split(" · ")[0]);
       expect(times).toEqual(["17:00 UTC", "17:00 UTC"]);
     });
   });

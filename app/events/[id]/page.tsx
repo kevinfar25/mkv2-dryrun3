@@ -82,7 +82,8 @@ export default async function EventDetailPage({
           <ul>
             {sessions.map((session) => (
               <li key={session.id} data-testid="session">
-                <span data-testid="session-title">{session.title}</span>{" "}
+                {/* Slot FIRST so the row leads with the time (the plan's required order);
+                    formatSessionSlot's label is unchanged and the time is not repeated. */}
                 <span data-testid="session-slot">
                   {formatSessionSlot({
                     startsAt: session.startsAt,
@@ -90,7 +91,8 @@ export default async function EventDetailPage({
                     attendees: session.attendeeCount,
                     checkedIn: session.checkedInCount,
                   })}
-                </span>
+                </span>{" · "}
+                <span data-testid="session-title">{session.title}</span>
               </li>
             ))}
           </ul>
