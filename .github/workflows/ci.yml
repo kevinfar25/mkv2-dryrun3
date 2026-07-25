@@ -32,3 +32,18 @@ jobs:
         with:
           node-version: 20
       - run: node scripts/check-migrations.mjs
+
+  # Third blocking check, mirroring tradegamesfinal's required-check set. The jig's
+  # `ci-wait --require` must have three required contexts to enforce, and a phase that
+  # reddens ONLY this one is how we prove a partial-green PR is still refused.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint

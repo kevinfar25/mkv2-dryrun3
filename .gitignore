@@ -9,3 +9,7 @@ next-env.d.ts
 /playwright-report/
 /test-results/
 .vercel
+
+# MK V2 dry-run scratch (ledgers, briefs, verdicts) — never committed.
+.mkv2-run/
+JIG-BRIEF.md

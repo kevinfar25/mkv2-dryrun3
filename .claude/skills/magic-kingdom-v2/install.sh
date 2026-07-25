@@ -28,6 +28,17 @@ DST_SKILLS="$TARGET/.claude/skills"
 DST_CMDS="$TARGET/.claude/commands"
 mkdir -p "$DST_SKILLS" "$DST_CMDS"
 
+# Refuse a self-install. Each skill is copied with `rm -rf "$DST/$s"` then `cp -R "$SRC/$s"`, so if
+# the target resolves to the SOURCE tree (`./install.sh .`, or a symlinked/relative path to it) the
+# rm deletes the bundle it is about to copy — destroying the source and leaving nothing installed.
+# Compare RESOLVED paths, not the strings the user typed.
+abspath() { (cd "$1" 2>/dev/null && pwd -P) || echo "$1"; }
+if [ "$(abspath "$DST_SKILLS")" = "$(abspath "$SRC_SKILLS")" ]; then
+  echo "error: target resolves to the SOURCE bundle ($(abspath "$SRC_SKILLS"))." >&2
+  echo "       Installing there would delete the source before copying it. Pick a different target." >&2
+  exit 2
+fi
+
 # --- the bundle -------------------------------------------------------------
 #  magic-kingdom-v2 : this skill (the generator)
 #  squadron-v2      : front-half — parallel fleet, waves, Codex gates, round budget

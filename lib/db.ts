@@ -4,7 +4,9 @@ import { Pool, type PoolClient } from "pg";
 // DATABASE_URL at import time) runs during `next build`, where the var is absent, and
 // throws. The pool is created on first query and cached on globalThis across hot reloads.
 declare global {
-  // eslint-disable-next-line no-var
+  // `var` is the only legal form inside `declare global`. no-var is enabled repo-wide but does
+  // not flag ambient declarations, so this needs no disable directive (one here reported as an
+  // unused-directive warning and kept the lint baseline off zero).
   var __pgPool: Pool | undefined;
 }
 

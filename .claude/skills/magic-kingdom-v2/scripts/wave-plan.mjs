@@ -6,6 +6,17 @@
 // — so it lives here, where the same input always yields the same output. The AI produces
 // the manifest; this script produces the waves. No LLM re-derivation, no drift.
 //
+// A FILE COLLISION IS A DEPENDENCY. Two phases that touch the same file are not merely
+// "don't build these together" — the second one must build ON TOP of the first, because
+// SKILL.md's own rule is "a phase depends on every phase that creates or heavily modifies a
+// file it also touches". Splitting them into different waves but leaving the later phase's
+// build base at bare origin/main means it never sees its sibling's edits to the shared file:
+// it may not compile, and it is GUARANTEED to conflict when the jig rebases it after the
+// sibling merges — burning the ≤2 refit budget on exactly the clash the wave split existed to
+// avoid, and possibly ending held. So every collision becomes a real dependency edge here,
+// oriented earlier-plan-phase-first, and that edge then drives waves, install order, AND the
+// emitted build base.
+//
 // Usage:   node wave-plan.mjs <manifest.json>
 // Manifest: { "phases": [ { "id":"P1", "files":["a.ts","b.ts"], "deps":["P0"],
 //                           "migration": true, "planIndex": 0 } ] }
@@ -15,7 +26,15 @@
 //   - planIndex (optional): stable order from the plan; defaults to array position
 //
 // Output (stdout, JSON):
-//   { collisions:[{a,b,files}], waves:[["P1","P5"],...], installOrder:["P1",...], warnings:[] }
+//   { collisions, collisionDeps, effectiveDeps, buildBases, waves, installOrder, warnings }
+//   collisionDeps= the edges INFERRED from shared files: [{dependent, dependsOn, files}]. Read
+//                  these — they are the ones you did not write in the manifest.
+//   effectiveDeps= per phase, explicit deps + inferred collision deps (what everything below uses)
+//   buildBases   = per phase, the branch(es) its worktree must be created from. This is the
+//                  load-bearing value the supervisor needs and must not hand-derive:
+//                  {phase, base:"origin/main"} | {phase, base:"<dep>", from:"branch"} |
+//                  {phase, base:"integration", mergeOf:[...]}   (direct deps only — a dep's own
+//                  base is already in its branch, so transitive deps need no re-merge)
 //   waves        = parallel BUILD groups: within a wave, no two phases share a file AND no
 //                  phase depends on another in the same/later wave.
 //   installOrder = serial MERGE order: a topological sort, migration-bearing phases pulled
@@ -57,10 +76,38 @@ export function derive(manifest) {
     }
   }
 
-  // --- BUILD WAVES: dependency layers, split within a layer by file-collision ---
-  // A phase is eligible once every dep is in an EARLIER wave. Within one wave, greedily
-  // admit eligible phases in planIndex order, skipping any that collide with one already
-  // admitted; skipped phases fall to a later wave. Terminates: each pass assigns ≥1 phase.
+  // --- COLLISION ⇒ DEPENDENCY -------------------------------------------------------------
+  // A shared file is a build-order constraint, not just a "keep them apart" hint: the later
+  // phase must branch off the earlier one or it never sees its edits. Orient each collision
+  // earlier-planIndex-first and record it as a real edge. Skip a pair the explicit deps already
+  // order (in EITHER direction, transitively) — re-adding it in the opposite direction would
+  // manufacture a cycle out of a plan that is perfectly consistent.
+  const explicitDeps = new Map(phases.map(p => [p.id, [...p.deps]]));
+  const deps = new Map(phases.map(p => [p.id, [...p.deps]]));   // effective (grows below)
+  const mustPrecede = (id) => {                                  // transitive closure of deps
+    const seen = new Set(), stack = [...(deps.get(id) || [])];
+    while (stack.length) {
+      const d = stack.pop();
+      if (seen.has(d)) continue;
+      seen.add(d);
+      for (const dd of deps.get(d) || []) stack.push(dd);
+    }
+    return seen;
+  };
+  const collisionDeps = [];
+  const pairs = [...collisions].sort((x, y) =>
+    (byId.get(x.a).planIndex - byId.get(y.a).planIndex) || (byId.get(x.b).planIndex - byId.get(y.b).planIndex));
+  for (const c of pairs) {
+    const [lo, hi] = byId.get(c.a).planIndex <= byId.get(c.b).planIndex ? [c.a, c.b] : [c.b, c.a];
+    if (mustPrecede(hi).has(lo) || mustPrecede(lo).has(hi)) continue;   // already ordered
+    deps.get(hi).push(lo);
+    collisionDeps.push({ dependent: hi, dependsOn: lo, files: c.files });
+  }
+
+  // --- BUILD WAVES: dependency layers over the EFFECTIVE deps -------------------------------
+  // A phase is eligible once every effective dep is in an EARLIER wave. Because a collision is
+  // now an edge, colliding phases cannot land in one wave — the collision check below is kept
+  // only as an assertion that this holds.
   const waveOf = new Map();
   const ordered = [...phases].sort((a, b) => a.planIndex - b.planIndex);
   let w = 0;
@@ -70,9 +117,9 @@ export function derive(manifest) {
     const wave = [];
     for (const p of ordered) {
       if (!remaining.has(p.id)) continue;
-      const depsReady = p.deps.every(d => waveOf.has(d) && waveOf.get(d) < w);
+      const depsReady = deps.get(p.id).every(d => waveOf.has(d) && waveOf.get(d) < w);
       if (!depsReady) continue;
-      if (wave.some(q => collidesWith.get(p.id).has(q))) continue; // file clash within wave
+      if (wave.some(q => collidesWith.get(p.id).has(q))) continue; // must never fire now
       wave.push(p.id);
     }
     if (!wave.length) fail(3, 'dependency cycle or unsatisfiable deps: ' + [...remaining].join(','));
@@ -84,10 +131,12 @@ export function derive(manifest) {
   for (const [id, wv] of waveOf) (waves[wv] ||= []).push(id);
   for (const wv of waves) wv.sort((a, b) => byId.get(a).planIndex - byId.get(b).planIndex);
 
-  // --- INSTALL ORDER: topological, migration-first then planIndex among ready peers ---
+  // --- INSTALL ORDER: topological over EFFECTIVE deps, migration-first then planIndex ---
+  // Using the effective deps is what guarantees a colliding sibling installs FIRST, so the
+  // jig's rebase of the later phase is a fast-forward over code it was already built on.
   const indeg = new Map(phases.map(p => [p.id, 0]));
   const dependents = new Map(phases.map(p => [p.id, []]));
-  for (const p of phases) for (const d of p.deps) {
+  for (const p of phases) for (const d of deps.get(p.id)) {
     indeg.set(p.id, indeg.get(p.id) + 1);
     dependents.get(d).push(p.id);
   }
@@ -110,10 +159,31 @@ export function derive(manifest) {
   }
   if (installOrder.length !== phases.length) fail(3, 'dependency cycle (install order)');
 
+  // --- BUILD BASES: what each phase's worktree branches OFF ---------------------------------
+  // Only DIRECT effective deps matter: a dep's branch already contains its own base, so a
+  // transitive dep needs no second merge. No deps → origin/main. One → that dep's branch.
+  // Several → an ephemeral integration branch merging them, then branch the phase off that.
+  // Transitive reduction first: if P3 depends on both P2 and P1 but P2 already depends on P1,
+  // then branching off P2 ALREADY carries P1 — listing both would spin up an integration branch
+  // for nothing. Keep only deps not reachable through another dep.
+  const buildBases = installOrder.map(id => {
+    const d = deps.get(id);
+    const minimal = d.filter(x => !d.some(y => y !== x && mustPrecede(y).has(x)));
+    if (!minimal.length) return { phase: id, base: 'origin/main' };
+    if (minimal.length === 1) return { phase: id, base: `branch:${minimal[0]}`, dependsOn: minimal };
+    return { phase: id, base: 'integration', mergeOf: [...minimal].sort(), dependsOn: minimal };
+  });
+
   if (!collisions.length && phases.length > 1)
     warnings.push('no file collisions detected — verify the manifest lists real per-phase files, not an empty set');
+  if (collisionDeps.length)
+    warnings.push(`${collisionDeps.length} dependency edge(s) INFERRED from shared files — these phases must ` +
+      `build on each other, not on bare origin/main: ` +
+      collisionDeps.map(c => `${c.dependent}→${c.dependsOn}`).join(', '));
 
-  return { collisions, waves, installOrder, warnings };
+  const effectiveDeps = Object.fromEntries(phases.map(p => [p.id, deps.get(p.id)]));
+  const explicit = Object.fromEntries(phases.map(p => [p.id, explicitDeps.get(p.id)]));
+  return { collisions, collisionDeps, explicitDeps: explicit, effectiveDeps, buildBases, waves, installOrder, warnings };
 }
 
 // --- CLI ---

@@ -217,6 +217,15 @@ project's answer into this skill.**
   migration gate are **no-ops**; say so and the prompt simply never triggers them.
 - **Staging target** to dry-run migrations against, and **how the supervisor reaches prod**
   to apply them (secret-manager config + psql path, or equivalent).
+- **The ATOMIC MIGRATION RUNNER, if the repo has one** — a script that applies a migration AND
+  records it in the applied-versions registry in ONE transaction (grep `package.json` scripts and
+  `scripts/` for `migrate:apply` / `migrate:status` / a bespoke runner; CLAUDE.md usually says so
+  outright). Detect the **exact command including its secret-manager wrapper** and emit it as
+  «prod-apply command». This matters more than it looks: applying with a raw `psql -f` leaves the
+  registry behind while the schema moves ahead, so the next push re-applies migrations that are
+  already live — and non-idempotent ones then fail or re-run a backfill. If the repo has a runner,
+  the emitted prompt must make any other apply path a HARD STOP. Also capture the read-only
+  drift/status command so the gate can verify the recorded row afterwards.
 - **Exact required CI check names** (so the supervisor verifies the right ones).
 - **Secret-manager wrapping** — grep `package.json` scripts for `doppler run` / `infisical
   run` / `direnv` / `vault` / `dotenv-vault`. If wrapped, find the **non-injecting dev
@@ -248,6 +257,22 @@ project's answer into this skill.**
       target, directly on the hosted **PROD** URL — and use the hosted PROD URL for D4.
   Record which surface each gate drove in the ledger. A hosted preview being unreachable is
   NEVER license to skip B4/B5 — it selects a different surface, it does not remove the gate.
+  · **Vercel setup gotchas (detect + fix once, before the run relies on prod deploys):** (i) a
+    project created via `vercel project add` on an EMPTY dir locks Framework Preset = "Other", so
+    `next build` succeeds but the deploy fails `No Output Directory named "public" found` → commit a
+    `vercel.json {"framework":"nextjs"}` (deterministic, survives re-detect). (ii) A Sensitive
+    integration var (Neon `DATABASE_URL`) comes back EMPTY from `vercel env pull` — it exists ONLY
+    at runtime, so migrate/seed the hosted DB from a deployed token-guarded route (`/api/setup`),
+    never from the laptop. (iii) On the FREE plan, provisioning the Postgres store needs a browser/
+    device confirmation — the CLI can only `connect` an already-provisioned resource. Verify the
+    prod alias serves (`GET <prodURL>/api/health` → 200) BEFORE the jig depends on it.
+- **e2e-in-CI coverage gap (detect, then decide up front).** If the project has a Playwright/e2e
+  suite but CI does NOT run it (common: `ci.yml` owns the check names `required_status_checks`
+  matches BY NAME, so it is off-limits to edit mid-run — renaming a job silently detaches the
+  ruleset), then the browser gate exists ONLY inside the jig (B4/B5) + D4, NOT as a required check
+  between runs. That is acceptable for the run itself (the jig drives a real browser), but SAY SO in
+  the summary — a later edit could break e2e with CI still green. Do NOT edit `ci.yml` mid-train to
+  "fix" it; note it as a follow-up.
 - **Codex-companion-in-worktree constraint** — the codex companion (`review` /
   `adversarial-review` / `task`) **dies with a worktree as cwd** (`failed to load
   configuration`). This is a property of the tool, not any repo. The emitted prompt MUST
@@ -268,7 +293,14 @@ From the per-phase Relevant Files (Step 1.3), following squadron-v2 step 2:
 
 - **Collision graph:** two phases collide iff their Relevant-Files sets intersect (or an
   explicit `data-deps` / "Depends on: Phase N" / prose hint says so). A phase depends on
-  every phase that creates or heavily modifies a file it also touches.
+  every phase that creates or heavily modifies a file it also touches. **A COLLISION IS A
+  DEPENDENCY, not just a "different wave" hint** — `wave-plan.mjs` now converts each one into a
+  real edge (oriented earlier-plan-phase-first, skipped when the explicit deps already order the
+  pair either way) and uses it for the waves, the install order, AND the build base. Separating
+  two phases into different waves while leaving the later one's base at bare `origin/main` was a
+  latent bug: it never sees its sibling's edits to the shared file, so it may not compile and is
+  guaranteed to conflict at the jig's rebase — spending the ≤2 refit budget on precisely the
+  clash the wave split was meant to prevent.
 - **Waves:** topologically sort; a wave = phases whose dependencies have all **been built**
   (have a branch), NOT merged. Run a wave in parallel; start the next only when the current
   wave's groups have an open, green PR.
@@ -299,8 +331,16 @@ output. Write the map you extracted to a manifest and run:
 ```
 node .claude/skills/magic-kingdom-v2/scripts/wave-plan.mjs <manifest.json>
 #   manifest: { "phases":[ {"id":"P1","files":[…],"deps":[…],"migration":true,"planIndex":0}, … ] }
-#   → { collisions, waves, installOrder }   (exit 3 = dependency cycle → fix the manifest)
+#   → { collisions, collisionDeps, explicitDeps, effectiveDeps, buildBases, waves, installOrder,
+#       warnings }                          (exit 3 = dependency cycle → fix the manifest)
 ```
+
+**`buildBases` is authoritative — paste it, never re-derive a build base by hand.** Each entry is
+`{phase, base}` where base is `origin/main`, `branch:<dep>`, or `integration` + `mergeOf:[…]`
+(already transitively reduced, so you only get an integration branch when the deps are genuinely
+independent). **Read `collisionDeps`** before launching: those are the edges the script inferred
+from shared files that you did NOT write in the manifest — they are exactly the constraints a
+hand-derivation misses.
 
 Its `waves`/`installOrder` are authoritative; if they surprise you, the manifest's file map is
 wrong (fix the judgment input), not the algorithm. The script enforces the invariants above:
@@ -343,6 +383,22 @@ Re-read the emitted prompt against the plan; fix and re-write if any fails:
 - [ ] Waves + install order were produced by `scripts/wave-plan.mjs` (from an extracted file
       manifest), not derived by hand; the jig ledger is driven by `scripts/ledger.mjs` and the
       CODIFIED HELPERS block (ledger/jig-step/migration-safety) is present in the jig template.
+- [ ] The ledger's `init` line puts `refit` in `--counters` (never `--gates`) and declares
+      `--premerge`; D1 checks `ledger ready` (NOT `done`, which cannot pass pre-merge).
+- [ ] D2 EXECUTES `migration-safety.mjs` (not just mentions it) against a LIVE-exported registry,
+      and applies through «prod-apply command» with any other apply path marked a HARD STOP.
+- [ ] `ci-wait` is invoked with `--require '«exact CI check names»'` wherever CI is verified.
+- [ ] STEP A calls `jig-step.mjs rebase/push` (not hand-typed git), and the worktree command
+      creates the phase branch with `-b` (a detached HEAD has nothing to push and fails the jig's
+      own branch assertion).
+- [ ] Every phase's BUILD BASE came from `wave-plan.mjs`'s `buildBases`, not from reading the
+      dependency list by eye — and `collisionDeps` was read, so no phase that shares a file with
+      another is sitting on bare `origin/main`.
+- [ ] D3 contains the STRICT-RULESET recovery loop (check `mergeStateStatus` → `gh pr
+      update-branch` on BEHIND → re-run the SHA-invalidated gates → bounded retries), not an
+      implicit wait on auto-merge. Required on any repo where a merge puts other PRs BEHIND.
+- [ ] The migration APPLY appears exactly ONCE (D2). B3 is validate-only — if B3 also applied,
+      D2's own registry check would block the branch it just applied.
 - [ ] For a run > ~3 phases or > 2 waves, the thin-top-orchestrator + fresh-sub-supervisor
       topology is called out (a per-stage brief per sub-supervisor; parent waits via herdr
       `--until done`, one level of nesting). A tiny run may stay single-supervisor — say which.
@@ -381,6 +437,7 @@ INSTALL ORDER (the merge-train sequence): «P… → P… → …»
 MILESTONES: «M1 … due <abs> · …»
 DECISIONS: «all resolved — do not re-ask» | «OPEN: <d> blocks P<n> — those phases do NOT launch»
 REPO FACTS: deploy=«…» · migrations=«path/registry or NONE» · staging=«…» · prod-access=«…» ·
+  prod-apply command=«atomic runner cmd, or NONE — any other apply path is a HARD STOP» ·
   CI checks=«…» · non-injecting dev cmd=«…» · neutralize keys=«…» · main-checkout=«…» ·
   collided prefixes=«…» · grant/RLS rule=«…»
 You are the SOLE writer of «[] [wip] [x] [f]»: [wip] at launch, [x] ONLY after the phase
@@ -395,21 +452,27 @@ jig B2). Two hard facts learned the hard way:
       dispatch + hand-polling `status/result <job-id>` STALLS: the poller can't see the job,
       the jobs run SERIALLY, and the supervisor spins for minutes while the real workers sit
       done. DO NOT dispatch Codex gates that way.
-  ⇒ Instead, run each Codex gate in its OWN herdr pane so herdr tracks it natively and gates
-    run CONCURRENTLY (this is the `/herdr` "check for readiness with native status" answer
-    applied to gates, not just builds):
+  (c) The INTERACTIVE codex surface (a bare `codex` TUI, or `node "$CODEX" task …` driven live)
+      can go UNRESPONSIVE mid-gate — the verdict never renders, or text sits unsubmitted (observed
+      TWICE in a real run). DO NOT drive the interactive TUI for a gate. Run codex NON-INTERACTIVELY
+      with `codex exec`, redirecting the verdict to a FILE, and read the FILE — this is immune to any
+      TUI redraw/hang and is the recommended form for EVERY Codex gate (G0/G1/G2 and jig B2).
+  ⇒ Run each Codex gate as a one-shot `codex exec … > file` in its OWN herdr pane so herdr still
+    tracks the pane going idle when exec exits, AND the verdict is captured to a file (not a fragile
+    TUI buffer). Gates still run CONCURRENTLY (one pane each):
+        out=«main-checkout»/.mkv2-run/codex-P<N>-G2.txt
         p=$(herdr pane split <anchor> --direction down --no-focus --cwd «main-checkout» ...)  # opaque id from JSON
         herdr pane rename <p> "P<N>-G2"; herdr pane set-bg <p> "#1b1822"
-        herdr pane run <p> "node \"$CODEX\" task --model spark --effort high 'main...<branch> — <focus>'"
-        herdr pane wait-output <p> --regex '<a codex completion marker>' --timeout <ms>   # OR:
-        herdr agent wait <p> --until idle --timeout <ms>     # codex pane goes idle when the task returns
-        herdr pane read <p> --source recent-unwrapped --lines <N>   # read the raw verdict YOURSELF
-        herdr pane close <p>                                        # DONE with it → close immediately
+        herdr pane run <p> "codex exec --model spark --effort high 'main...<branch> — <focus>' > $out 2>&1"
+        herdr agent wait <p> --until idle --timeout <ms>     # pane goes idle when `codex exec` EXITS (no TUI)
+        cat "$out"                                           # read the raw verdict YOURSELF, from the FILE
+        herdr pane close <p>                                 # DONE with it → close immediately
     Spawn all of a wave's G1/G2 panes at once (right-stack, distinct bg) → they run in
-    parallel → wait on each pane → read each verdict → CLOSE each gate pane the moment its
+    parallel → wait on each pane → read each verdict FILE → CLOSE each gate pane the moment its
     verdict is recorded (per PANE LIFECYCLE — don't let gate panes pile up). Never leave a
-    gate on an un-watched background job. (If you ever must use `task --background`, you own
-    the job-registry fragility — prefer the pane approach.)
+    gate on an un-watched background job. (Reading the FILE — not the pane buffer — is also what
+    makes the verdict trustworthy if the pane later shows spurious redraw; see the phantom-text note
+    under WATCHER HYGIENE.)
 
 ═══════════════════════════════════════════════════════════════════════════
 PHASE 0 — G0: challenge the plan (once, before wave 1)
@@ -451,7 +514,13 @@ verify-don't-trust, one PR per group) — with these substitutions ONLY:
     create a group pane (split to the RIGHT of the supervisor, keep the human's focus, launch):
         # BUILD BASE (Step 3): independent phase → origin/main; dependent phase → its
         # dependency branch(es), NOT bare origin/main, or it can't compile against the dep's code.
-        git worktree add <wt> <build-base>            # origin/main | <dep-branch> | <integration-branch>
+        # ⚠ CREATE THE PHASE BRANCH HERE (-b). `git worktree add <wt> origin/main` leaves a
+        #   DETACHED HEAD: the worker has no upstream to push, /github's `@{u}` check fails, no PR
+        #   can be opened, and later the jig's rebase/push refuse with "(detached HEAD)". Name it
+        #   once, and record that exact name in the phase↔branch↔PR map the jig runs off.
+        git worktree add -b <phase-branch> <wt> <build-base>   # base: origin/main | <dep-branch> | <integration-branch>
+        # (for a multi-dependency phase: create the integration base FIRST as its own branch, then
+        #  `git worktree add -b <phase-branch> <wt> <integration-branch>`)
         herdr pane split --current --direction right --no-focus --cwd <wt> --env PORT=<port>
         # ↑ first worker; STACK later workers on the right instead:
         #   herdr pane split <first-worker-pane> --direction down --no-focus --cwd <wt> --env PORT=<port>
@@ -558,46 +627,83 @@ skip it "to save time."
 CODIFIED HELPERS (mechanical steps are SCRIPTS — call them, don't hand-drive; judgment stays
 yours). All under `.claude/skills/magic-kingdom-v2/scripts/`, JSON in/out, clean exit codes:
   · LEDGER — back the ledger with `ledger.mjs` (JSON source of truth; `render` prints the table):
-      `node …/ledger.mjs init  <jig.json> --phases P1,P4,… --gates rebase,ci,codexreview,prreview,migration,switchon,functest,merge,prodtest,refit`
+      `node …/ledger.mjs init  <jig.json> --phases P1,P4,… --gates rebase,ci,codexreview,prreview,migration,switchon,functest,merge,prodtest --premerge rebase,ci,codexreview,prreview,migration,switchon,functest --counters refit`
+      `node …/ledger.mjs ready <jig.json> P1`      → BACK-GATE 1 (D1): exit 0 only if every PRE-MERGE gate is PASS. Use this AT D1 — `done` cannot pass there, because `merge`/`prodtest` are recorded after it.
+      ⚠ `refit` is the FIXER BUDGET, a COUNTER — NOT a gate. It goes in `--counters`, never in
+        `--gates`: no sane refit value ("1/2") begins with "PASS", so listing it as a gate makes
+        `done` permanently unsatisfiable. `init` now refuses it in `--gates` and tells you this.
       `node …/ledger.mjs set   <jig.json> P1 ci "PASS gh@<sha>"`   (a cell counts as pass ONLY if it begins with PASS)
+      `node …/ledger.mjs set   <jig.json> P1 refit "1/2"`          (counter — tracked + rendered, not gated)
       `node …/ledger.mjs done  <jig.json> P1`     → REFUSES (exit 1) unless every gate cell is PASS — the never-skip rule, mechanically enforced
       `node …/ledger.mjs validate <jig.json>`     → exit 1 if ANY done phase has a non-PASS cell. Run before declaring the train complete.
   · JIG MECHANICS — `jig-step.mjs` owns the one-right-way git/gh steps (below): `rebase` (STEP A),
-    `push` --force-with-lease, `ci-wait` (B1, resolves + reports the PR HEAD SHA so CI is verified on
-    the REBASED commit), `migration-diff` (B3/D1 universal SQL check). Interpreting a NOVEL red is
-    still yours; the script only reports ground truth.
+    `push` --force-with-lease, `ci-wait` (B1), `migration-diff` (B3/D1 universal SQL check).
+    Interpreting a NOVEL red is still yours; the script only reports ground truth.
+      `node …/jig-step.mjs ci-wait <PR#|branch> --require '«exact CI check names»'`
+    ci-wait is the ANTI-STALE-GREEN step: `gh pr checks` does not say which COMMIT a check ran on,
+    so straight after the force-push the PREVIOUS run's concluded checks read as an all-green PR.
+    So it polls the checks BOUND TO THE PR's CURRENT HEAD SHA (`commits/<head>/check-runs` +
+    legacy `/status`), refuses to call an EMPTY check set green, aborts if the head moves mid-wait,
+    and with `--require` refuses green unless every named required check is PRESENT and successful
+    on that SHA — which also catches a renamed CI job silently detached from the ruleset. Always
+    pass `--require` with the check names detected in Step 2. Exits: 0 green · 1 red/missing-
+    required/head-moved · 2 no PR · 4 timeout.
   · MIGRATION STATIC SCREEN — `migration-safety.mjs <file.sql…> --registry <prefixes>` is the
     mechanical HALF of BACK-GATE 2: a FAIL blocks; a PASS still hands off to the full gate (staging
     dry-run + LIVE prod-schema check + expand/contract reasoning). Necessary, not sufficient.
+    It reports TWO buckets: `violations` (blocking, exit 1) and `notes` (exit 0 — data-touching but
+    scoped, e.g. a backfill `UPDATE … WHERE`, or a `DROP POLICY IF EXISTS` re-created in the same
+    file). NOTES ARE NOT A PASS OF THE GATE — the full gate must still reason about each one; they
+    are simply not mechanical blockers. Precision is deliberate: it screens statement-by-statement,
+    masks `$$ … $$` function bodies (SQL there is not migrate-time DML), and skips GRANT/REVOKE
+    (`REVOKE … TRUNCATE …` is hardening, not a TRUNCATE). If it ever flags a whole repo's
+    migrations, that is a BUG in the screen — fix the screen, do not disable the gate.
 
 FOR EACH BRANCH in install order, one at a time:
 
- STEP A — RE-FIT (rebase onto the current house)
-   A1. git -C <worktree> fetch -q origin
-   A2. git -C <worktree> rebase origin/main
-       (first branch: usually a no-op; later branches are behind by what already installed
-        — that gap is exactly what the jig closes.)
-   A3. CONFLICT (rebase stops) → git rebase --abort; ledger rebase:conflict. This is the
-       OBVIOUS clash (two phases edited the same lines) → FIXER (below). Never resolve by guessing.
-   A4. CLEAN → history was rewritten → git -C <worktree> push --force-with-lease origin <branch>.
-       --force-with-lease is REQUIRED and SAFE here (own feature branch, never main/shared);
-       plain --force is BANNED. If it refuses, STOP and inspect — something touched the branch.
+ STEP A — RE-FIT (rebase onto the current house) — RUN IT THROUGH THE HELPER, NOT BY HAND.
+   The helper owns fetch + dirty-tree refusal + rebase + clean abort-on-conflict + the
+   --force-with-lease push, AND it asserts the worktree is actually ON <branch> first. Hand-typed
+   git here is how you rebase and force-push whatever happened to be checked out instead:
+   A1. node …/scripts/jig-step.mjs rebase <branch> --cwd <worktree>
+       → JSON {ok, changed, before, after, base}. Exit 2 = wrong worktree (fix the cwd, do NOT
+       retype the git). Exit 1 = conflict (it already ran `rebase --abort`, so the tree is clean).
+       (first branch: usually a no-op — `changed:false`; later branches are behind by what already
+        installed — that gap is exactly what the jig closes.)
+   A2. CONFLICT (exit 1, `conflicts:[…]`) → ledger rebase:conflict. This is the OBVIOUS clash (two
+       phases edited the same lines) → FIXER (below). Never resolve by guessing.
+   A3. CLEAN → history was rewritten → node …/scripts/jig-step.mjs push <branch> --cwd <worktree>
+       (always --force-with-lease: REQUIRED and SAFE here — own feature branch, never main/shared;
+       plain --force is BANNED). Exit 1 = the lease refused → STOP and inspect, something else
+       touched the branch. Exit 2 = wrong worktree.
 
  STEP B — RE-INSPECT the re-fitted branch (NEVER reuse the fleet's stamp)
-   B1. CI: `gh pr checks <PR#>` green ON THE REBASED head SHA (the force-push retriggers;
-       confirm head SHA == rebased HEAD, not a stale pass).
+   B1. CI: `node …/scripts/jig-step.mjs ci-wait <PR#> --require '«CI check names»'` — green ON
+       THE REBASED head SHA. Do NOT eyeball `gh pr checks`: it does not report which commit a
+       check ran on, so the pre-rebase run's concluded checks read as green for seconds-to-
+       minutes after the force-push. ci-wait binds to the current head SHA, treats an empty
+       check set as NOT green, and fails if a required check name is missing on that SHA.
    B2. RE-REVIEW the COMBINED diff — from «main-checkout» (CODEX-FROM-MAIN-CHECKOUT),
        range main...<branch>, focus = «repo failure modes». Read result yourself. Confirmed
        findings → FIXER. This is the catch for the SILENT clash a clean rebase merged
        without a conflict (a sibling renamed a symbol this branch still calls). Also re-run
        `/kevin-pr-review <PR#>` from «main-checkout» to its 4/5 bar if fixes were driven.
-   B3. MIGRATION re-check (skip entirely if migrations=NONE): 
-       git -C <worktree> diff --name-only origin/main...HEAD -- '«migration path»'
-       If ANY file → run the MIGRATION SAFETY GATE (BACK-GATE 2 below) AGAINST THE
-       NOW-CURRENT LIVE SCHEMA — a sibling migration may have landed: re-confirm no
-       version-prefix collision in «registry», re-confirm expand/contract still holds
-       against the updated schema, DRY-RUN on «staging» again. A pass from before a sibling
-       merged is VOID.
+   B3. MIGRATION re-check — VALIDATE ONLY. **B3 NEVER APPLIES TO PROD.** The apply happens
+       exactly ONCE, in D2, and only after D1. (Applying here and then "re-running BACK-GATE 2"
+       at D2 is circular: the first apply records the version in the live registry, and the
+       static screen treats an already-registered prefix as a BLOCKING violation — so the branch
+       could never satisfy its own second check. One apply, one place.)
+       node …/scripts/jig-step.mjs migration-diff <branch> '«migration path»' --cwd <worktree>
+       If `hasMigration:false` → ledger migration:n/a, move on. If ANY file → re-validate AGAINST
+       THE NOW-CURRENT LIVE SCHEMA, because a sibling migration may have landed and a pass from
+       before that is VOID:
+         · node …/scripts/migration-safety.mjs <the diffed .sql> --registry <freshly-exported live prefixes>
+           → exit 1 blocks (a prefix now taken by a sibling shows up HERE, which is the point);
+             read the notes.
+         · re-confirm expand/contract still holds against the updated schema (new code on the OLD
+           schema AND old code on the NEW one), checking prod objects LIVE.
+         · DRY-RUN on «staging» again.
+       Record migration:PASS-validated. The prod apply is D2's job, once.
    B4. SWITCH-ON test — drive the feature on the functional-test surface for the REBASED
        branch (hosted preview URL if reachable per the hosted-preview-reachability rule, else
        the locally-served preview), in a herdr pane, with Playwright (browser-driving rule
@@ -620,11 +726,28 @@ FOR EACH BRANCH in install order, one at a time:
  STEP D — INSTALL (full-auto — BACK-GATES, verbatim)
    D1. BACK-GATE 1 — MERGE GATE: all CI green (verified), /kevin-pr-review ≥ 4/5, switch-on
        (B4) passed AND functest (B5 /testing:general:test-review-general) clean on the final
-       commit, every task satisfied (you checked), no open decision for this phase — i.e.
-       EVERY jig ledger cell for this branch is PASS (no blanks). UNIVERSAL SQL CHECK: `git diff --name-only origin/main...HEAD --
+       commit, every task satisfied (you checked), no open decision for this phase — i.e. every
+       PRE-MERGE ledger cell for this branch is PASS (no blanks), checked mechanically:
+           node …/scripts/ledger.mjs ready <jig.json> P<N>     # exit 0 = merge-eligible
+       ⚠ D1 requires the PRE-MERGE gates ONLY. `merge` (D3) and `prodtest` (D4) CANNOT be PASS
+         yet — they are recorded after this gate. Do NOT read D1 as "every cell in the row",
+         and NEVER pre-fill merge/prodtest to satisfy it: that is the exact false-green this
+         ledger exists to stop. `ready` = eligible to merge; `done` (D5) = every gate incl.
+         merge + prodtest. UNIVERSAL SQL CHECK: `git diff --name-only origin/main...HEAD --
        '«migration path»'` — if it lists ANY file, BACK-GATE 2 MUST pass first (even absent
        a ⚠ flag; the diff is ground truth). All true → proceed.
    D2. BACK-GATE 2 — MIGRATION SAFETY GATE (skip if migrations=NONE or diff has no SQL).
+       ⚠ THIS IS THE ONE AND ONLY PLACE THE MIGRATION IS APPLIED TO PROD. B3 validated; D2
+         applies. If B3 already reported PASS-validated and nothing has landed since, re-run the
+         checks (cheap) but expect them to agree — and if the static screen now reports "version
+         prefix already applied (registry)" for THIS branch's own migration, STOP: that means it
+         was already applied somewhere, so verify the live objects and RECORD-only, never re-apply.
+       RUN THE STATIC SCREEN FIRST — it is not optional and not merely documented:
+           node …/scripts/migration-safety.mjs <each changed .sql> --registry <live prefixes>
+       Export «registry» from the LIVE applied-versions table, not from the repo. Exit 1 ⇒ STOP
+       (do not apply, do not merge). Exit 0 ⇒ continue; its `notes` are NOT a pass — read each
+       one (scoped backfills, idempotent recreates, `DO`-block bodies, and any "function … is
+       CALLED in this migration" note) as part of the reasoning below.
        Apply the expand SQL to prod ONLY if ALL true; if uncertain on ANY point, do NOT
        apply, do NOT merge, ping the human:
          • Expand-only: CREATE {TABLE,COLUMN,FUNCTION,INDEX CONCURRENTLY,POLICY} or ADD
@@ -638,8 +761,35 @@ FOR EACH BRANCH in install order, one at a time:
            authenticated + tenant-scoped («grant/RLS rule»). RLS ≠ table grants.
          • Unique version prefix (no collision with «collided prefixes»).
          • APPLY ORDER: expand migrations to prod BEFORE the code merge; contract/cleanup deferred.
-       All true → apply via «prod-access», verify with a LIVE query, then merge.
-   D3. Merge the PR to main (/merge-into-main). Confirm the merge commit landed (git log).
+       All true → apply via «prod-apply command», verify with a LIVE query, then merge.
+       ⛔ APPLY ONLY THROUGH THE PROJECT'S ATOMIC MIGRATION RUNNER when it has one («prod-apply
+         command» from Step 2 — e.g. a script that applies the SQL and writes the applied-versions
+         row in ONE transaction). A raw `psql -f` / direct-SQL apply is a HARD STOP even when it
+         would "work": it changes prod without recording the version, so the ledger says "pending"
+         for a migration that is already live, and the next push re-applies it — several
+         migrations here are NOT idempotent (they RAISE on unexpected state or re-run a backfill).
+         If no atomic runner exists, apply via «prod-access» and record the version in the same
+         session, then verify the row exists with a LIVE query.
+   D3. MERGE — and handle the STRICT-RULESET BEHIND state explicitly; it is the single most
+       likely place this train stalls. On a repo whose ruleset is strict (a branch must be
+       up-to-date with the deploy branch), EVERY merge you just made puts every remaining PR
+       BEHIND — including the one you are about to merge, if anything landed since B1. Arming
+       auto-merge does NOT fix it when the repo disallows branch updates: it arms, then waits on a
+       condition nothing will ever satisfy, which reads like slow CI rather than a stall.
+       So, immediately before merging, CHECK and RECOVER in a loop — never just wait:
+         gh pr view <PR#> --json mergeStateStatus,mergeable
+         · BEHIND        → `gh pr update-branch <PR#>` (THIS is what unblocks it), then re-run the
+                           gates that the new SHA invalidated — ci (`ci-wait … --require`), and any
+                           gate that judged the final diff (B2 review, B4/B5 if code moved) — then
+                           re-check. A new SHA means the old passes are void.
+         · BLOCKED/UNSTABLE → a required check is red or missing on THIS SHA → back to B1, not a wait.
+         · DIRTY         → real conflict with main → FIXER, re-enter STEP A.
+         · CLEAN/HAS_HOOKS → merge now (/merge-into-main).
+       Bound the loop (e.g. 3 update-branch cycles) — if it keeps going BEHIND, someone else is
+       merging continuously: hold the branch and say so rather than spinning. A non-mergeable PR is
+       a HANDLED STATE with an action, never an implicit "wait and see".
+       Then confirm the merge commit landed (git log) and record it:
+       `node …/ledger.mjs set <jig.json> P<N> merge "PASS <merge SHA>"`.
    D4. BACK-GATE 3 — POST-DEPLOY PROD TEST: a merge IS a prod deploy — exercise THIS phase
        LIVE on prod by RE-RUNNING `/testing:general:test-review-general` against the PROD
        version — the hosted **PROD** URL where the deploy target hosts one (Vercel/Netlify),
@@ -647,8 +797,16 @@ FOR EACH BRANCH in install order, one at a time:
        customer?»: on a LIVE-CUSTOMER prod it is READ-ONLY smoke — drive the read/verify half
        of each flow, no writes/admin (those were proven on «staging»/preview in B5); on an
        OWNED/SANDBOX prod, run the full functional pass. Regression → hotfix through this same
-       loop on a new branch before continuing; never leave prod red. Record prodtest:pass.
-   D5. Mark the phase [x] in the plan (you are the sole writer). THE HOUSE JUST CHANGED —
+       loop on a new branch before continuing; never leave prod red. Then record it:
+       `node …/ledger.mjs set <jig.json> P<N> prodtest "PASS <what you drove + result>"`.
+   D5. CLOSE THE PHASE IN THE LEDGER FIRST, THEN THE PLAN — in this order, because the JSON
+       ledger is the source of truth and the plan marker is only its shadow:
+         node …/ledger.mjs done <jig.json> P<N>     # exit 0 REQUIRED; refuses on any non-PASS cell
+       Only if that exits 0, mark the phase [x] in the plan (you are the sole writer). ⛔ NEVER
+       write [x] without a successful `done` — `validate` only inspects phases the JSON marks
+       done, so a run that updates only the Markdown can finish reporting every phase complete
+       while `validate` says "0 done phase(s)". A [x] with no `done` behind it is an unverified
+       claim. THE HOUSE JUST CHANGED —
        origin/main now includes this branch. Loop back to STEP A for the next branch; it
        must be re-fit against this new main. This per-install re-fit is why jig+install are
        one loop.
@@ -684,9 +842,16 @@ FOR EACH BRANCH in install order, one at a time:
    saying "rebased/green/merged" is worth what "I pushed" is worth: nothing until checked.
 
  TERMINATION: per-branch deadline (default 90 min through jig+install) → held,
-   skip-with-dependents. The train ends when every branch is installed/held/skipped. Report
-   the three sets (installed + merge SHA + prod-test; held + reason; skipped-blocked + which
-   held branch blocked them). A partial train is a DESIGNED outcome — never idle on a held branch.
+   skip-with-dependents. The train ends when every branch is installed/held/skipped. Before you
+   report the train complete, PROVE it from the ledger, don't recount it from memory:
+     node …/ledger.mjs validate <jig.json>   # exit 0 required
+     node …/ledger.mjs render   <jig.json>   # the table you paste into the report
+   Then assert the count matches: the number of phases the JSON marks done == the number you are
+   claiming installed. `validate` is silent about phases that were never marked done, so "OK: 0
+   done phase(s)" alongside "all phases installed" is a CONTRADICTION, not a pass — if you see it,
+   the D5 `done` calls were skipped and the train is NOT verified. Report the three sets
+   (installed + merge SHA + prod-test; held + reason; skipped-blocked + which held branch blocked
+   them). A partial train is a DESIGNED outcome — never idle on a held branch.
 
 ═══════════════════════════════════════════════════════════════════════════
 BROWSER-DRIVING RULE (front switch-on tests, jig B4, jig B5 functional test, back-gate D4):
@@ -710,6 +875,14 @@ on. If you ever find yourself idle with a background watcher still running, that
 resume and drive. And to hand text to any agent pane, ALWAYS use `herdr agent prompt <pane>
 "<text>"` (it submits) — never leave text via `send-text` without submitting, or it sits
 staged in the input and the agent does nothing.
+PHANTOM-TEXT ANOMALY (observed across a full run): unsubmitted text nobody dispatched appeared
+staged in nearly every helper pane (claude AND codex) across all stages — e.g. "add the @ alias
+to vitest.config.ts", "mark all six phases [x]". It never submitted and affected no gate, but if
+it ever DID submit it would be an UNTRACKED INSTRUCTION landing inside a gate. Standing rule:
+(1) capture gate verdicts to a FILE and trust the file, not the live pane buffer (see CODEX GATES
+(c)); (2) if a pane ever ACTS on an instruction you did not dispatch, treat that pane's output as
+UNTRUSTED and re-verify its gate from scratch; (3) never mark a phase [x] off a pane's on-screen
+claim — only off the on-disk ledger cell you wrote from verified evidence.
 
 STOP-AND-ASK — THE TEST IS "DO I HAVE A CLEAR RECOMMENDATION?", not "is it prod-facing?".
 If you can articulate a clear, defensible next action — a root-cause fix, a revert-to-known-
