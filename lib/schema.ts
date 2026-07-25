@@ -132,8 +132,13 @@ update attendees
 
 -- DEMO FIXTURE — seeded THROUGH THIS MIGRATION, because POST /api/setup records no migration
 -- versions and is a hard stop in this run: a fixture that only lived there could never
--- legitimately reach the hosted database. Keyed on the SEED_EVENTS titles in lib/schema.ts, so
--- it is a no-op when those events do not exist (the join simply matches nothing).
+-- legitimately reach the hosted database.
+-- Keyed on the FULL SEED_EVENTS identity from lib/schema.ts — title AND starts_at AND location,
+-- not the display title alone. events has no unique constraint on title (real events may share
+-- one), so a title-only join would attach these fixed demo dates and rooms to somebody's
+-- unrelated event that merely happens to be called "Team Offsite Planning". starts_at is
+-- compared as a timestamptz (the literal is cast), never as text. The join matching nothing is
+-- the normal case, so this is a no-op unless the actual seed events are present.
 --   · "Team Offsite Planning" gets TWO sessions at the SAME starts_at (the title tiebreak X3
 --     asserts) plus a later one, and one of them has a NULL room.
 --   · "Quarterly Demo Day" is deliberately left with ZERO sessions — X3 must prove that page
@@ -145,12 +150,14 @@ select e.id, v.title, v.starts_at::timestamptz, v.room::text
   from events e
   join (
     values
-      ('Team Offsite Planning', 'Budget Review', '2026-08-04T17:00:00Z', 'Valletta HQ — Room 2'),
-      ('Team Offsite Planning', 'Roadmap Deep Dive', '2026-08-04T17:00:00Z', null),
-      ('Team Offsite Planning', 'Retro and Wrap-up', '2026-08-04T18:30:00Z', 'Valletta HQ — Room 3'),
-      ('Open Source Meetup', 'Lightning Talks', '2026-08-11T18:30:00Z', 'Sliema Community Hall')
-  ) as v (event_title, title, starts_at, room)
+      ('Team Offsite Planning', '2026-08-04T17:00:00.000Z', 'Valletta HQ — Room 2', 'Budget Review', '2026-08-04T17:00:00Z', 'Valletta HQ — Room 2'),
+      ('Team Offsite Planning', '2026-08-04T17:00:00.000Z', 'Valletta HQ — Room 2', 'Roadmap Deep Dive', '2026-08-04T17:00:00Z', null),
+      ('Team Offsite Planning', '2026-08-04T17:00:00.000Z', 'Valletta HQ — Room 2', 'Retro and Wrap-up', '2026-08-04T18:30:00Z', 'Valletta HQ — Room 3'),
+      ('Open Source Meetup', '2026-08-11T18:30:00.000Z', 'Sliema Community Hall', 'Lightning Talks', '2026-08-11T18:30:00Z', 'Sliema Community Hall')
+  ) as v (event_title, event_starts_at, event_location, title, starts_at, room)
     on v.event_title = e.title
+   and e.starts_at = v.event_starts_at::timestamptz
+   and e.location = v.event_location
  where not exists (
    select 1
      from sessions s
@@ -186,8 +193,13 @@ export const SEED_EVENTS: SeedEvent[] = [
 ];
 
 export type SeedSession = {
-  /** The SEED_EVENTS title this session hangs off — events have no natural key beyond it. */
+  // The FULL identity of the SEED_EVENTS row this session hangs off. Titles are NOT unique in
+  // this schema, so the title alone would also match a real, unrelated event that happens to
+  // share it — and hand it these fixed demo dates and rooms. All three fields together are the
+  // seed event's identity, and all three must match. Same predicate as the migration's fixture.
   eventTitle: string;
+  eventStartsAt: string;
+  eventLocation: string;
   title: string;
   startsAt: string;
   room: string | null;
@@ -205,24 +217,32 @@ export type SeedSession = {
 export const SEED_SESSIONS: SeedSession[] = [
   {
     eventTitle: "Team Offsite Planning",
+    eventStartsAt: "2026-08-04T17:00:00.000Z",
+    eventLocation: "Valletta HQ — Room 2",
     title: "Budget Review",
     startsAt: "2026-08-04T17:00:00.000Z",
     room: "Valletta HQ — Room 2",
   },
   {
     eventTitle: "Team Offsite Planning",
+    eventStartsAt: "2026-08-04T17:00:00.000Z",
+    eventLocation: "Valletta HQ — Room 2",
     title: "Roadmap Deep Dive",
     startsAt: "2026-08-04T17:00:00.000Z",
     room: null,
   },
   {
     eventTitle: "Team Offsite Planning",
+    eventStartsAt: "2026-08-04T17:00:00.000Z",
+    eventLocation: "Valletta HQ — Room 2",
     title: "Retro and Wrap-up",
     startsAt: "2026-08-04T18:30:00.000Z",
     room: "Valletta HQ — Room 3",
   },
   {
     eventTitle: "Open Source Meetup",
+    eventStartsAt: "2026-08-11T18:30:00.000Z",
+    eventLocation: "Sliema Community Hall",
     title: "Lightning Talks",
     startsAt: "2026-08-11T18:30:00.000Z",
     room: "Sliema Community Hall",

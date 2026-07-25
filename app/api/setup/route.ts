@@ -89,22 +89,35 @@ export async function POST(request: Request) {
       // these from the migration itself (20260727010000), which is the only path that records
       // a version; this route records nothing and is not used by this run. Leaving it
       // events-only would make a from-scratch database disagree with a migrated one.
-      // Keyed on event title + case-insensitive session title, so it is idempotent and a
-      // no-op when the event does not exist — same predicate as the migration's seed. Inside
-      // the SAME advisory-locked transaction as the events above.
+      // Keyed on the seed event's FULL identity — title AND starts_at AND location, all bound,
+      // never the title alone: events carries no unique constraint on title (see the comment
+      // above), so a title-only match would hand these fixed demo dates and rooms to a real,
+      // unrelated event that merely shares the name. starts_at is compared as a timestamptz.
+      // Plus the case-insensitive session title, so it is idempotent and a no-op when the seed
+      // event does not exist — the same predicate as the migration's fixture. Inside the SAME
+      // advisory-locked transaction as the events above.
       for (const session of SEED_SESSIONS) {
         const res = await client.query(
           `insert into sessions (event_id, title, starts_at, room)
-           select e.id, $2, $3::timestamptz, $4::text
+           select e.id, $4, $5::timestamptz, $6::text
              from events e
             where e.title = $1
+              and e.starts_at = $2::timestamptz
+              and e.location = $3
               and not exists (
                 select 1 from sessions s
-                 where s.event_id = e.id and lower(s.title) = lower($2)
+                 where s.event_id = e.id and lower(s.title) = lower($4)
               )
            on conflict do nothing
            returning id`,
-          [session.eventTitle, session.title, session.startsAt, session.room],
+          [
+            session.eventTitle,
+            session.eventStartsAt,
+            session.eventLocation,
+            session.title,
+            session.startsAt,
+            session.room,
+          ],
         );
         inserted += res.rowCount ?? 0;
       }

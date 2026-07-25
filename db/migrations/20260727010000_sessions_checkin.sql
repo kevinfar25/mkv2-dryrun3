@@ -81,8 +81,13 @@ update attendees
 
 -- DEMO FIXTURE — seeded THROUGH THIS MIGRATION, because POST /api/setup records no migration
 -- versions and is a hard stop in this run: a fixture that only lived there could never
--- legitimately reach the hosted database. Keyed on the SEED_EVENTS titles in lib/schema.ts, so
--- it is a no-op when those events do not exist (the join simply matches nothing).
+-- legitimately reach the hosted database.
+-- Keyed on the FULL SEED_EVENTS identity from lib/schema.ts — title AND starts_at AND location,
+-- not the display title alone. events has no unique constraint on title (real events may share
+-- one), so a title-only join would attach these fixed demo dates and rooms to somebody's
+-- unrelated event that merely happens to be called "Team Offsite Planning". starts_at is
+-- compared as a timestamptz (the literal is cast), never as text. The join matching nothing is
+-- the normal case, so this is a no-op unless the actual seed events are present.
 --   · "Team Offsite Planning" gets TWO sessions at the SAME starts_at (the title tiebreak X3
 --     asserts) plus a later one, and one of them has a NULL room.
 --   · "Quarterly Demo Day" is deliberately left with ZERO sessions — X3 must prove that page
@@ -94,12 +99,14 @@ select e.id, v.title, v.starts_at::timestamptz, v.room::text
   from events e
   join (
     values
-      ('Team Offsite Planning', 'Budget Review', '2026-08-04T17:00:00Z', 'Valletta HQ — Room 2'),
-      ('Team Offsite Planning', 'Roadmap Deep Dive', '2026-08-04T17:00:00Z', null),
-      ('Team Offsite Planning', 'Retro and Wrap-up', '2026-08-04T18:30:00Z', 'Valletta HQ — Room 3'),
-      ('Open Source Meetup', 'Lightning Talks', '2026-08-11T18:30:00Z', 'Sliema Community Hall')
-  ) as v (event_title, title, starts_at, room)
+      ('Team Offsite Planning', '2026-08-04T17:00:00.000Z', 'Valletta HQ — Room 2', 'Budget Review', '2026-08-04T17:00:00Z', 'Valletta HQ — Room 2'),
+      ('Team Offsite Planning', '2026-08-04T17:00:00.000Z', 'Valletta HQ — Room 2', 'Roadmap Deep Dive', '2026-08-04T17:00:00Z', null),
+      ('Team Offsite Planning', '2026-08-04T17:00:00.000Z', 'Valletta HQ — Room 2', 'Retro and Wrap-up', '2026-08-04T18:30:00Z', 'Valletta HQ — Room 3'),
+      ('Open Source Meetup', '2026-08-11T18:30:00.000Z', 'Sliema Community Hall', 'Lightning Talks', '2026-08-11T18:30:00Z', 'Sliema Community Hall')
+  ) as v (event_title, event_starts_at, event_location, title, starts_at, room)
     on v.event_title = e.title
+   and e.starts_at = v.event_starts_at::timestamptz
+   and e.location = v.event_location
  where not exists (
    select 1
      from sessions s
