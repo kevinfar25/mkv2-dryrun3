@@ -125,3 +125,60 @@ export async function rsvpCount(eventId: number): Promise<number> {
     throw error;
   }
 }
+
+// ── P6 — attendee drill-down ───────────────────────────────────────────────
+//
+// Additive only: nothing above is changed. Same EXPAND/CONTRACT contract as
+// rsvpCount — this is a pure read, so 42P01 (attendees not created yet) degrades to
+// an empty list rather than a 500.
+
+export type Attendee = {
+  name: string;
+  /** ISO-8601 string, normalized the same way EventRow timestamps are. */
+  createdAt: string;
+};
+
+/** attendees.created_at comes back from node-postgres as a Date, not a string. */
+type RawAttendeeRow = { name: string; created_at: Date | string };
+
+/**
+ * Hard cap on how many attendee rows a single read may return. An event with a very
+ * large RSVP history would otherwise make the detail page and the JSON endpoint fetch,
+ * serialize and render every row — one event could exhaust response time and memory.
+ * The bound lives in SQL (`limit $2`, bound — never interpolated), so the DB never
+ * materializes more than this many rows in the first place.
+ */
+export const ATTENDEE_PAGE_LIMIT = 200;
+
+/**
+ * Every attendee of one event, most-recent-first — capped at `limit` rows
+ * (ATTENDEE_PAGE_LIMIT by default; the parameter is optional, so existing callers are
+ * unchanged). ONE query for the whole list — no per-row fan-out (no lookup inside a
+ * loop over the rows). `id desc` breaks ties for rows sharing a created_at so the order
+ * is deterministic. [] on the old schema.
+ */
+export async function listAttendees(
+  eventId: number,
+  limit: number = ATTENDEE_PAGE_LIMIT,
+): Promise<Attendee[]> {
+  if (!Number.isInteger(eventId)) return [];
+  // A caller asking for more than the cap (or for a nonsense limit) still gets the cap.
+  const bounded =
+    Number.isInteger(limit) && limit > 0
+      ? Math.min(limit, ATTENDEE_PAGE_LIMIT)
+      : ATTENDEE_PAGE_LIMIT;
+  try {
+    const rows = await query<RawAttendeeRow>(
+      `select name, created_at
+         from attendees
+        where event_id = $1
+        order by created_at desc, id desc
+        limit $2`,
+      [eventId, bounded],
+    );
+    return rows.map((row) => ({ name: row.name, createdAt: toIso(row.created_at) }));
+  } catch (error) {
+    if (isUndefinedTable(error)) return [];
+    throw error;
+  }
+}
