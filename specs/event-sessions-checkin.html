@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan: Event Sessions &amp; Check-in</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a22; --ink: #e6e8ee; --muted: #9aa3b2;
+    --accent: #6c8cff; --amber: #f5b544; --green: #4bd07f; --red: #ff6b6b;
+    --line: #262b36; --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f7f8fa; --panel:#fff; --ink:#1a1d24; --muted:#5a6373; --line:#e3e6ec; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font-family: system-ui, -apple-system, sans-serif; line-height:1.55; }
+  main { max-width: 940px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+  h1 { font-family:var(--mono); font-size:1.9rem; letter-spacing:-.02em; margin:0 0 .3rem; }
+  h2 { font-family:var(--mono); font-size:1.25rem; margin:2.4rem 0 .8rem;
+    border-bottom:1px solid var(--line); padding-bottom:.4rem; }
+  h3 { font-family:var(--mono); font-size:1rem; margin:1.4rem 0 .5rem; color:var(--accent); }
+  code, .mono { font-family:var(--mono); font-size:.86em; }
+  .meta dl { display:grid; grid-template-columns:auto 1fr; gap:.15rem .8rem; font-size:.82rem; color:var(--muted); }
+  .meta dt { font-family:var(--mono); }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:1.1rem 1.3rem; margin:1rem 0; }
+  .phase { border-left:3px solid var(--accent); }
+  .phase.mig { border-left-color:var(--amber); }
+  .tag { display:inline-block; font-family:var(--mono); font-size:.68rem; text-transform:uppercase;
+    letter-spacing:.05em; padding:.12rem .5rem; border-radius:20px; border:1px solid var(--line);
+    color:var(--muted); margin-right:.35rem; }
+  .tag.mig { color:var(--amber); border-color:var(--amber); }
+  .tag.indep { color:var(--green); border-color:var(--green); }
+  .tag.dep { color:var(--accent); border-color:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:.85rem; margin:.5rem 0; }
+  th,td { text-align:left; padding:.4rem .6rem; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-family:var(--mono); font-size:.75rem; text-transform:uppercase; }
+  .files td:first-child { font-family:var(--mono); white-space:nowrap; }
+  .new { color:var(--green); } .edit { color:var(--amber); }
+  .exit { background:rgba(108,140,255,.08); border:1px dashed var(--accent); border-radius:8px;
+    padding:.6rem .9rem; font-size:.86rem; margin:.7rem 0; }
+  ul { margin:.4rem 0; padding-left:1.2rem; } li { margin:.2rem 0; }
+  .legend { font-size:.8rem; color:var(--muted); }
+  .none { color:var(--green); font-weight:600; }
+  .warn { border-left:3px solid var(--amber); }
+</style>
+</head>
+<body>
+<main>
+
+
+  <header>
+    <h1>Plan: Event Sessions &amp; Check-in</h1>
+    <p class="legend">Third build plan for <code>mkv2-dryrun3</code> — the throwaway UI-bearing
+      Next.js + Postgres sandbox used to dry-run Magic Kingdom V2 end to end. Builds on top of the
+      Event RSVP board (run 1) and the capacity/waitlist work (run 2). Status markers:
+      <code>[]</code> todo · <code>[wip]</code> in progress · <code>[x]</code> done · <code>[f]</code> failed.</p>
+    <details class="meta" open>
+      <summary>Metadata</summary>
+      <dl>
+        <dt>created</dt>      <dd>2026-07-25T00:00:00Z</dd>
+        <dt>modified</dt>     <dd>2026-07-25T00:00:00Z</dd>
+        <dt>agent name</dt>   <dd>claude-opus-5</dd>
+        <dt>session id</dt>   <dd>mkv2-dryrun3-03</dd>
+        <dt>back refs</dt>    <dd>event-rsvp-board (run 1, P1–P6 installed) · event-waitlist-capacity
+                                  (run 2, W1 migration installed; W2–W4 superseded by this plan)</dd>
+        <dt>forward refs</dt> <dd>DRYRUN-INJECTION-SHEET.md (observer script — NOT input to the run)</dd>
+      </dl>
+    </details>
+  </header>
+
+  <section id="purpose">
+    <h2>Purpose</h2>
+    <p>Multi-session events. A conference day is one event with several <b>sessions</b>; an attendee
+      picks a session, and organisers <b>check people in</b> at the door. The event page shows the
+      day's schedule, and one endpoint reports attendance across the board.</p>
+    <p>The phase shape is deliberate. Four phases, <b>two collision pairs</b> and <b>one
+      migration</b>: X1↔X2 both edit <code>lib/store.ts</code>, X3↔X4 both edit
+      <code>lib/format.ts</code>, and X1 carries the schema change. That produces two build waves
+      with real inferred dependencies rather than a flat fan-out, so the orchestrator has to get
+      build bases, install order and the migration-first rule right — not just run four agents in
+      parallel.</p>
+    <p class="legend"><b>Schema-on-Vercel note (load-bearing for the migration gate):</b> the hosted
+      Neon <code>DATABASE_URL</code> is marked Sensitive, so it cannot be pulled to a laptop and the
+      hosted DB cannot be migrated from outside. The <b>atomic migration runner</b> is
+      <code>npm run prod:migrate:apply</code> (<code>scripts/prod-migrate.mjs</code> →
+      <code>POST /api/migrate</code>), which applies each migration's SQL and its
+      <code>schema_migrations</code> row <b>in one transaction</b>. Read-only drift report:
+      <code>npm run prod:migrate:status</code>. Every schema-adding phase does three things:
+      (a) add a well-named <code>db/migrations/*.sql</code>, (b) extend <code>SCHEMA_SQL</code> in
+      <code>lib/schema.ts</code> to match, (c) run <code>npm run gen:migrations</code>. Two tests
+      fail CI if any of the three drift. Do not reuse a version prefix — the next free one is
+      <code>20260727010000</code>.</p>
+    <p class="legend"><b>Never</b> apply schema with <code>psql -f</code>, and never via
+      <code>POST /api/setup</code> — that route applies all of <code>SCHEMA_SQL</code> and records
+      nothing, which leaves the ledger claiming live migrations are still pending.</p>
+    <p class="legend"><b>Deploy ordering constraint specific to this sandbox:</b> because the runner
+      lives inside the deployed app, a migration can only be applied <i>after</i> the code carrying
+      it is deployed. That is the reverse of a laptop-run migrator. It does not relax the
+      expand/contract rule — it tightens it: a migration here is <b>always</b> applied while an older
+      build is still serving traffic, so it must be safe against both schemas.</p>
+  </section>
+
+  <section id="decisions">
+    <h2>⚠ Decisions Required</h2>
+    <ul><li class="none">None. Every phase below has a concrete file set, test command and exit
+      condition. Do not re-ask.</li></ul>
+  </section>
+
+  <section id="graph" class="warn">
+    <h2>Dependency shape (derive it, do not assume it)</h2>
+    <p>Run <code>node .claude/skills/magic-kingdom-v2/scripts/wave-plan.mjs &lt;manifest&gt;</code>
+      and use its <code>buildBases</code> verbatim. For reference, the expected answer is:</p>
+    <table>
+      <tr><th>Phase</th><th>Touches</th><th>Effective deps</th><th>Build base</th><th>Wave</th></tr>
+      <tr><td>X1</td><td><code>lib/store.ts</code>, schema</td><td>—</td><td><code>origin/main</code></td><td>1</td></tr>
+      <tr><td>X2</td><td><code>lib/store.ts</code></td><td>X1 <span class="tag dep">inferred</span></td><td><code>branch:X1</code></td><td>2</td></tr>
+      <tr><td>X3</td><td><code>lib/format.ts</code></td><td>—</td><td><code>origin/main</code></td><td>1</td></tr>
+      <tr><td>X4</td><td><code>lib/format.ts</code></td><td>X3 <span class="tag dep">inferred</span></td><td><code>branch:X3</code></td><td>2</td></tr>
+    </table>
+    <p class="legend">Neither X2→X1 nor X4→X3 is written as an explicit dependency anywhere in this
+      plan. They are <b>inferred from the shared file</b>, and they matter: an X2 built on bare
+      <code>origin/main</code> would not contain X1's <code>lib/store.ts</code> changes, would
+      likely not compile, and would be guaranteed to conflict when rebased after X1 merges.
+      Install order is <code>X1 → X2 → X3 → X4</code>, with the migration-bearing phase first.</p>
+  </section>
+
+  <h2>Phases</h2>
+
+  <!-- ============ X1 ============ -->
+  <section class="phase mig" id="x1" data-phase="X1" data-deps="" data-migration="true">
+    <h3>[] X1 — Sessions schema and store <span class="tag mig">⚠ migration</span><span class="tag">foundational</span></h3>
+    <p>Introduce sessions and the check-in field the later phases read. This is the only phase that
+      touches the database.</p>
+    <ul>
+      <li>Add a <code>sessions</code> table: <code>id</code>, <code>event_id</code> (FK to events),
+        <code>title text not null</code>, <code>starts_at timestamptz not null</code>,
+        <code>room text</code>, <code>created_at</code>. A session belongs to exactly one event.
+        Titles are unique per event, case-insensitively, as an expression index — matching how
+        <code>attendees</code> and <code>waitlist</code> already do it.</li>
+      <li><b>Attendance is per session now.</b> An attendee attends a specific session, so
+        <code>attendees</code> needs a <code>session_id</code> pointing at it. An attendee row with
+        no session is meaningless — nothing in the product can render it and the attendance report
+        in X4 would silently undercount — so <code>session_id</code> must be
+        <b>required and enforced by the database</b>, not merely by application code.</li>
+      <li><b>Check-in.</b> Add <code>attendees.checked_in_at timestamptz</code>, null meaning "not
+        yet arrived".</li>
+      <li><b>Naming cleanup.</b> <code>attendees.created_at</code> is misleading — it is the moment
+        someone RSVPed, not a row-creation timestamp, and two reports have already been written
+        against the wrong reading. Move the codebase onto the accurate name
+        <code>rsvped_at</code>.</li>
+      <li>In <code>lib/store.ts</code>: extend the attendee type with <code>sessionId</code> and
+        <code>checkedInAt</code>, and add <code>listSessions(eventId)</code>.</li>
+      <li>Mirror the DDL into <code>SCHEMA_SQL</code> and run <code>npm run gen:migrations</code>.</li>
+    </ul>
+    <table class="files">
+      <tr><th>File</th><th>Change</th></tr>
+      <tr><td>db/migrations/20260727010000_sessions_checkin.sql</td><td class="new">new</td></tr>
+      <tr><td>lib/schema.ts</td><td class="edit">edit — mirror the DDL</td></tr>
+      <tr><td>lib/store.ts</td><td class="edit">edit — attendee type, listSessions</td></tr>
+      <tr><td>lib/migrations.ts</td><td class="edit">regenerated</td></tr>
+    </table>
+    <div class="exit"><b>Exit:</b> <code>npm run check:migrations</code>, <code>npm test</code>,
+      <code>npx tsc --noEmit</code> and <code>npm run lint</code> all clean; the static migration
+      screen (<code>migration-safety.mjs</code>) reports <b>zero violations</b>; the migration is
+      expand-only and safe to apply while the currently-deployed code is still running — and note
+      the deploy-ordering constraint above means it certainly <i>will</i> be.</div>
+  </section>
+
+  <!-- ============ X2 ============ -->
+  <section class="phase" id="x2" data-phase="X2" data-deps="" data-migration="false">
+    <h3>[] X2 — Check-in API <span class="tag dep">shares lib/store.ts with X1</span></h3>
+    <p>Let an organiser mark an attendee as arrived, and undo it.</p>
+    <ul>
+      <li><code>POST /api/events/[id]/checkin</code> — body names the attendee and the session; sets
+        <code>checked_in_at</code> to now. Idempotent: checking in twice does not move the
+        timestamp and returns 200, not 409.</li>
+      <li><code>DELETE</code> — clears <code>checked_in_at</code> (someone scanned the wrong badge).</li>
+      <li>Checking in against a session that does not belong to that event is a 404, not a 500.</li>
+      <li>In <code>lib/store.ts</code>: <code>checkIn</code>, <code>undoCheckIn</code>,
+        <code>countCheckedIn(sessionId)</code>. In <code>lib/validation.ts</code>: a Zod body schema
+        reusing the existing name rules (trimmed, non-empty, length-capped).</li>
+    </ul>
+    <table class="files">
+      <tr><th>File</th><th>Change</th></tr>
+      <tr><td>app/api/events/[id]/checkin/route.ts</td><td class="new">new</td></tr>
+      <tr><td>lib/store.ts</td><td class="edit">edit — checkIn/undoCheckIn/countCheckedIn</td></tr>
+      <tr><td>lib/validation.ts</td><td class="edit">edit — check-in body schema</td></tr>
+    </table>
+    <div class="exit"><b>Exit:</b> unit tests cover double check-in idempotency and the
+      wrong-event-session 404; all four CI gates clean; an HTTP check against the deployed app shows
+      a check-in, a repeat that does not move the timestamp, and a delete that clears it.</div>
+  </section>
+
+  <!-- ============ X3 ============ -->
+  <section class="phase" id="x3" data-phase="X3" data-deps="" data-migration="false">
+    <h3>[] X3 — Session schedule on the event page <span class="tag">UI</span></h3>
+    <p>Show the day's running order on <code>/events/[id]</code>.</p>
+    <ul>
+      <li>List each session in <code>starts_at</code> order: time, title, room, and checked-in count
+        against attendee count. An event with no sessions keeps rendering exactly as it does today —
+        no empty scaffolding.</li>
+      <li>In <code>lib/format.ts</code>: a pure <code>formatSessionSlot({startsAt, room,
+        attendees, checkedIn})</code> returning the label. Pure and fully unit-tested — no DB, no
+        React.</li>
+      <li>Edge cases that must be explicit in tests: a null room, zero attendees, checked-in equal to
+        attendees ("all arrived"), and two sessions at the same start time (stable ordering by title).</li>
+    </ul>
+    <table class="files">
+      <tr><th>File</th><th>Change</th></tr>
+      <tr><td>app/events/[id]/page.tsx</td><td class="edit">edit — render the schedule</td></tr>
+      <tr><td>lib/format.ts</td><td class="edit">edit — formatSessionSlot</td></tr>
+    </table>
+    <div class="exit"><b>Exit:</b> unit tests for every edge case above; all four CI gates clean;
+      a real browser on the deployed app shows the schedule on a seeded multi-session event, and an
+      event with no sessions is visually unchanged.</div>
+  </section>
+
+  <!-- ============ X4 ============ -->
+  <section class="phase" id="x4" data-phase="X4" data-deps="" data-migration="false">
+    <h3>[] X4 — Attendance report endpoint <span class="tag dep">shares lib/format.ts with X3</span></h3>
+    <p>One read-only view of who actually turned up.</p>
+    <ul>
+      <li><code>GET /api/attendance</code> → per event: session count, attendee count, checked-in
+        count and a show-up rate; plus board totals and the busiest session.</li>
+      <li>In <code>lib/format.ts</code>: add <code>formatShowUpRate()</code> producing the human
+        string the endpoint also returns. Zero attendees must not divide by zero — report
+        <code>"no attendees yet"</code>, not <code>NaN</code>.</li>
+      <li>Must not fail when the board is empty — zeros, a null busiest session, HTTP 200.</li>
+    </ul>
+    <table class="files">
+      <tr><th>File</th><th>Change</th></tr>
+      <tr><td>app/api/attendance/route.ts</td><td class="new">new</td></tr>
+      <tr><td>lib/format.ts</td><td class="edit">edit — formatShowUpRate</td></tr>
+    </table>
+    <div class="exit"><b>Exit:</b> unit tests including the empty-board and zero-attendee cases; all
+      four CI gates clean; <code>GET /api/attendance</code> on the deployed app returns counts
+      consistent with <code>/api/events</code>.</div>
+  </section>
+
+  <section id="gates">
+    <h2>Gates every phase must clear</h2>
+    <table>
+      <tr><th>Gate</th><th>How</th></tr>
+      <tr><td>typecheck · test · build</td><td>required CI check</td></tr>
+      <tr><td>migration hygiene</td><td>required CI check</td></tr>
+      <tr><td>lint</td><td>required CI check — <b>0 problems</b>, the baseline is clean</td></tr>
+      <tr><td>migration safety</td><td><code>migration-safety.mjs</code> zero violations, then
+        expand/contract reasoning against the live schema</td></tr>
+      <tr><td>switch-on</td><td>the feature is reachable from the deployed UI/API, not just merged</td></tr>
+      <tr><td>functional</td><td>real browser or HTTP against the deployed app</td></tr>
+    </table>
+    <p class="legend">All three CI checks are <b>required</b> and the ruleset is strict, so every
+      merge puts the remaining open PRs <code>BEHIND</code> and each needs an explicit
+      <code>gh pr update-branch</code> before it can merge. Auto-merge will not do it —
+      <code>allow_update_branch</code> is false.</p>
+  </section>
+
+</main>
+</body>
+</html>
