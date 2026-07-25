@@ -46,3 +46,25 @@ export function rsvpSummary(count: number, capacity?: number): string {
 export function formatColleagueNote(n: number): string {
   return `${n} note(s)`;
 }
+
+/**
+ * W3 — capacity badge for the events list. Pure: no DB, no React.
+ * capacity null => no limit, so show the attendee count alone.
+ */
+export function formatCapacity(input: {
+  attendees: number;
+  capacity: number | null;
+  waiting?: number | null;
+}): string {
+  const { attendees, capacity } = input;
+  const waiting = input.waiting ?? 0;
+  if (capacity === null) {
+    return `${attendees} going`;
+  }
+  const base = `${attendees} / ${capacity}`;
+  // Over-subscribed historical rows are real: attendees can exceed a later-added capacity.
+  if (attendees >= capacity) {
+    return waiting > 0 ? `${base} · Full · ${waiting} waiting` : `${base} · Full`;
+  }
+  return waiting > 0 ? `${base} · ${waiting} waiting` : base;
+}
