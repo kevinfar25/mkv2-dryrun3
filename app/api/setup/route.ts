@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { query, withTransaction } from "@/lib/db";
+import { withTransaction } from "@/lib/db";
 import { SCHEMA_SQL, SEED_EVENTS } from "@/lib/schema";
 
 // Touches the DB → must be dynamic, or `next build` would try to run it without
@@ -35,53 +35,57 @@ export async function POST(request: Request) {
 
   // A missing/empty body is a valid "no seed" call — the orchestrator posts both ways.
   // Anything that IS sent must be a valid object: malformed JSON, `[]`, {"seed":"true"}
-  // are 400 rather than a silent 200.
-  const raw = await request.text();
+  // are 400 rather than a silent 200. The body READ is inside the try too: if the request
+  // stream fails mid-read, request.text() rejects and that is a bad request, not a 500.
   let seed = false;
-  if (raw.trim() !== "") {
-    let parsedJson: unknown;
-    try {
-      parsedJson = JSON.parse(raw);
-    } catch {
-      return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
+  try {
+    const raw = await request.text();
+    if (raw.trim() !== "") {
+      const parsed = SetupBody.safeParse(JSON.parse(raw));
+      if (!parsed.success) {
+        return NextResponse.json({ ok: false, error: "invalid body" }, { status: 400 });
+      }
+      seed = parsed.data.seed === true;
     }
-    const parsed = SetupBody.safeParse(parsedJson);
-    if (!parsed.success) {
-      return NextResponse.json({ ok: false, error: "invalid body" }, { status: 400 });
-    }
-    seed = parsed.data.seed === true;
+  } catch {
+    return NextResponse.json({ ok: false, error: "invalid JSON body" }, { status: 400 });
   }
 
   try {
-    await query(SCHEMA_SQL);
+    // ONE transaction, ONE lock, taken as the FIRST statement — it covers the schema
+    // apply as well as the seed. `CREATE TABLE IF NOT EXISTS` is not concurrency-safe:
+    // two first-ever calls against an empty DB can both pass the existence check and one
+    // then fails with a duplicate-object error on the system catalog. Holding the advisory
+    // lock across the whole bootstrap serializes that; the second caller blocks until the
+    // first commits, then sees the table (and the seeded rows) and does nothing.
+    const seeded = await withTransaction(async (client) => {
+      await client.query("select pg_advisory_xact_lock($1::bigint)", [
+        SEED_LOCK_KEY.toString(),
+      ]);
 
-    let seeded = 0;
-    if (seed) {
+      await client.query(SCHEMA_SQL);
+
+      if (!seed) return 0;
+
       // The not-exists check below is check-then-insert, so two concurrent seed calls
       // could both see "no row" and both insert (there is deliberately no unique
-      // constraint on events — real events may share a title+time). A transaction-scoped
-      // advisory lock serializes seeders: the second call blocks until the first commits,
-      // then its not-exists check sees the committed rows and inserts nothing.
-      seeded = await withTransaction(async (client) => {
-        await client.query("select pg_advisory_xact_lock($1::bigint)", [
-          SEED_LOCK_KEY.toString(),
-        ]);
-        let inserted = 0;
-        for (const event of SEED_EVENTS) {
-          const res = await client.query(
-            `insert into events (title, starts_at, location)
-             select $1, $2::timestamptz, $3
-             where not exists (
-               select 1 from events where title = $1 and starts_at = $2::timestamptz
-             )
-             returning id`,
-            [event.title, event.startsAt, event.location],
-          );
-          inserted += res.rowCount ?? 0;
-        }
-        return inserted;
-      });
-    }
+      // constraint on events — real events may share a title+time). The lock above is
+      // what makes this safe.
+      let inserted = 0;
+      for (const event of SEED_EVENTS) {
+        const res = await client.query(
+          `insert into events (title, starts_at, location)
+           select $1, $2::timestamptz, $3
+           where not exists (
+             select 1 from events where title = $1 and starts_at = $2::timestamptz
+           )
+           returning id`,
+          [event.title, event.startsAt, event.location],
+        );
+        inserted += res.rowCount ?? 0;
+      }
+      return inserted;
+    });
 
     return NextResponse.json({ ok: true, schema: "applied", seeded });
   } catch (error) {
