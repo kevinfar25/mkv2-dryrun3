@@ -71,13 +71,19 @@ export async function POST(request: Request) {
       // could both see "no row" and both insert (there is deliberately no unique
       // constraint on events — real events may share a title+time). The lock above is
       // what makes this safe.
+      // It matches the FULL seed identity — title AND starts_at AND location — the same
+      // predicate the session loop below uses. On title+starts_at alone, an unrelated event
+      // sharing a seed event's title and timestamp but not its location would suppress the
+      // real seed event, and the session loop would then find no full-identity match and
+      // seed no sessions at all, breaking fresh-bootstrap parity.
       let inserted = 0;
       for (const event of SEED_EVENTS) {
         const res = await client.query(
           `insert into events (title, starts_at, location)
            select $1, $2::timestamptz, $3
            where not exists (
-             select 1 from events where title = $1 and starts_at = $2::timestamptz
+             select 1 from events
+              where title = $1 and starts_at = $2::timestamptz and location = $3
            )
            returning id`,
           [event.title, event.startsAt, event.location],

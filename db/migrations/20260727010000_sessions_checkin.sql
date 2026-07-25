@@ -44,15 +44,20 @@ update attendees
  where rsvped_at is null
     or rsvped_at > created_at;
 
--- LEGACY BACKFILL — one session per event that ALREADY has attendees, so historical
--- attendance is attributed rather than invisible (X4 would otherwise undercount). Idempotent
--- (insert ... where not exists, keyed on event + lower(title)) and scoped to events that
--- actually have attendees.
+-- LEGACY BACKFILL — one General Admission session per event, so historical attendance is
+-- attributed rather than invisible (X4 would otherwise undercount). Idempotent (insert ...
+-- where not exists, keyed on event + lower(title)).
+-- Deliberately NOT gated on "the event already has attendees": the INSERT and the UPDATE
+-- below run in this one migration, but the OLD build is still serving traffic while it
+-- applies. An event with no attendees at INSERT time would get no session; if the old build
+-- then RSVPs into it, the UPDATE's exists-guard fails and that attendee's session_id stays
+-- NULL forever, because this migration is ledger-recorded and never re-runs. Giving EVERY
+-- event a session keeps that guard always satisfiable. Still expand-only — one extra row
+-- per event, nothing removed or narrowed.
 insert into sessions (event_id, title, starts_at, room)
 select e.id, 'General Admission', e.starts_at, null::text
   from events e
- where exists (select 1 from attendees a where a.event_id = e.id)
-   and not exists (
+ where not exists (
      select 1
        from sessions s
       where s.event_id = e.id
