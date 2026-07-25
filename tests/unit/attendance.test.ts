@@ -393,6 +393,28 @@ describe("showUpRatePercent / formatShowUpRate", () => {
     expect(showUpRatePercent({ attendees: 2000, checkedIn: 999 })).toBe(50);
   });
 
+  it("rounds exact half-tenths up even when checkedIn × 1000 exceeds MAX_SAFE_INTEGER", () => {
+    // Both counts are safe integers, but `checkedIn * 1000` is NOT — 1.001e16 is past
+    // MAX_SAFE_INTEGER. Any implementation that falls back to scaling the float quotient
+    // here evaluates (checkedIn / attendees) * 1000 as 500.49999999999994 and returns 50.
+    // The rate is exactly 50.1%, so the arithmetic has to stay in exact integers.
+    expect(
+      showUpRatePercent({ attendees: 20_000_000_000_000, checkedIn: 10_010_000_000_000 }),
+    ).toBe(50.1);
+    expect(
+      formatShowUpRate({ attendees: 20_000_000_000_000, checkedIn: 10_010_000_000_000 }),
+    ).toContain("50.1%");
+
+    // A second pair on a different half-tenth, also past the safe product range: the exact
+    // rate is 50.15%, which must round UP to 50.2 (the float path yields 50.1).
+    expect(
+      showUpRatePercent({ attendees: 40_000_000_000_000, checkedIn: 20_060_000_000_000 }),
+    ).toBe(50.2);
+    expect(
+      formatShowUpRate({ attendees: 40_000_000_000_000, checkedIn: 20_060_000_000_000 }),
+    ).toContain("50.2%");
+  });
+
   it("clamps checkedIn to attendees — arrivals cannot exceed the roll", () => {
     expect(showUpRatePercent({ attendees: 4, checkedIn: 9 })).toBe(100);
     expect(formatShowUpRate({ attendees: 4, checkedIn: 9 })).toBe(

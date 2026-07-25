@@ -155,22 +155,27 @@ function safeAttendance(input: { attendees: number; checkedIn: number }): {
 export function showUpRatePercent(input: { attendees: number; checkedIn: number }): number {
   const { attendees, checkedIn } = safeAttendance(input);
   if (attendees === 0) return 0;
-  // ×1000 / 10 rather than toFixed(1): this returns a NUMBER, and the endpoint pins
-  // showUpRate as a number.
+  // Tenths-of-a-percent / 10 rather than toFixed(1): this returns a NUMBER, and the
+  // endpoint pins showUpRate as a number.
   //
-  // The ×1000 is applied to the INTEGER numerator, not to the quotient: a float quotient
-  // loses exact half-tenths, so `(1001 / 2000) * 1000` is 500.49999999999994 and rounds
-  // DOWN to 50 instead of 50.1. `(checkedIn * 1000) / attendees` divides an exact integer
-  // and lands on 500.5, which rounds to the required 50.1.
+  // The rounding is done in EXACT INTEGER arithmetic with BigInt, never in floating point.
+  // Any float step loses exact half-tenths — `(1001 / 2000) * 1000` is 500.49999999999994
+  // and rounds DOWN to 50 instead of 50.1 — and `checkedIn * 1000` cannot be trusted either,
+  // because safeCount permits counts up to MAX_SAFE_INTEGER, so that product can itself
+  // leave the exactly-representable range. BigInt has neither limit, so there is a single
+  // code path with no boundary to fall off.
   //
-  // safeCount permits counts up to MAX_SAFE_INTEGER, so `checkedIn * 1000` can itself leave
-  // the exactly-representable range; in that (pathological) case fall back to the quotient
-  // form. Either way the clamp above bounds the ratio to [0, 1], so the result is still
-  // never NaN, Infinity, negative or greater than 100.
-  const scaled = checkedIn * 1000;
-  return Number.isSafeInteger(scaled)
-    ? Math.round(scaled / attendees) / 10
-    : Math.round((checkedIn / attendees) * 1000) / 10;
+  // tenths = round-half-up of (checkedIn * 1000) / attendees, computed exactly:
+  //   floor((2·N + D) / (2·D))  with N = checkedIn * 1000, D = attendees
+  //
+  // Both counts are already floored, safe, non-negative integers and checkedIn is clamped
+  // to attendees, so BigInt() is always valid and `tenths` is always an integer in
+  // [0, 1000] — exactly representable as a Number. The result is therefore always a
+  // one-decimal value in [0, 100]: never NaN, never Infinity, never negative, never > 100.
+  const tenths = Number(
+    (BigInt(checkedIn) * 2000n + BigInt(attendees)) / (BigInt(attendees) * 2n),
+  );
+  return tenths / 10;
 }
 
 /**
