@@ -125,3 +125,40 @@ export async function rsvpCount(eventId: number): Promise<number> {
     throw error;
   }
 }
+
+// ── P6 — attendee drill-down ───────────────────────────────────────────────
+//
+// Additive only: nothing above is changed. Same EXPAND/CONTRACT contract as
+// rsvpCount — this is a pure read, so 42P01 (attendees not created yet) degrades to
+// an empty list rather than a 500.
+
+export type Attendee = {
+  name: string;
+  /** ISO-8601 string, normalized the same way EventRow timestamps are. */
+  createdAt: string;
+};
+
+/** attendees.created_at comes back from node-postgres as a Date, not a string. */
+type RawAttendeeRow = { name: string; created_at: Date | string };
+
+/**
+ * Every attendee of one event, most-recent-first. ONE query for the whole list — no
+ * per-row fan-out (no lookup inside a loop over the rows). `id desc` breaks ties for
+ * rows sharing a created_at so the order is deterministic. [] on the old schema.
+ */
+export async function listAttendees(eventId: number): Promise<Attendee[]> {
+  if (!Number.isInteger(eventId)) return [];
+  try {
+    const rows = await query<RawAttendeeRow>(
+      `select name, created_at
+         from attendees
+        where event_id = $1
+        order by created_at desc, id desc`,
+      [eventId],
+    );
+    return rows.map((row) => ({ name: row.name, createdAt: toIso(row.created_at) }));
+  } catch (error) {
+    if (isUndefinedTable(error)) return [];
+    throw error;
+  }
+}
