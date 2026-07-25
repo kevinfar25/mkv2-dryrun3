@@ -121,3 +121,73 @@ function formatSlotTime(iso: string): string {
   if (Number.isNaN(date.getTime())) return iso;
   return `${date.toISOString().slice(11, 16)} UTC`;
 }
+
+// ── X4 — show-up rate ──────────────────────────────────────────────────────
+//
+// APPENDED, additive only: nothing above is reordered, rewritten or re-commented.
+// Both helpers are pure — no DB, no React, no Date.now(), no globals — and both reuse
+// the existing safeCount hardening in place rather than repeating it.
+
+/** The pinned sentinel for a zero denominator — never "NaN%", never "0% of 0". */
+const NO_ATTENDEES = "no attendees yet";
+
+/**
+ * Hardens the pair every rate is computed from: both counts are floored to safe,
+ * non-negative integers (NaN, ±Infinity, negatives and out-of-safe-range become 0), and
+ * checkedIn is CLAMPED to attendees — arrivals cannot exceed the roll.
+ */
+function safeAttendance(input: { attendees: number; checkedIn: number }): {
+  attendees: number;
+  checkedIn: number;
+} {
+  const attendees = safeCount(input.attendees);
+  return { attendees, checkedIn: Math.min(safeCount(input.checkedIn), attendees) };
+}
+
+/**
+ * X4 — the show-up percentage, 0..100, rounded to ONE decimal place.
+ *
+ * The only division in this module, so it is the only place a NaN or an Infinity could
+ * be born: zero attendees short-circuits to 0 BEFORE dividing, and the clamp above bounds
+ * the quotient to [0, 1]. The result can therefore never be NaN, Infinity, negative or
+ * greater than 100.
+ */
+export function showUpRatePercent(input: { attendees: number; checkedIn: number }): number {
+  const { attendees, checkedIn } = safeAttendance(input);
+  if (attendees === 0) return 0;
+  // Tenths-of-a-percent / 10 rather than toFixed(1): this returns a NUMBER, and the
+  // endpoint pins showUpRate as a number.
+  //
+  // The rounding is done in EXACT INTEGER arithmetic with BigInt, never in floating point.
+  // Any float step loses exact half-tenths — `(1001 / 2000) * 1000` is 500.49999999999994
+  // and rounds DOWN to 50 instead of 50.1 — and `checkedIn * 1000` cannot be trusted either,
+  // because safeCount permits counts up to MAX_SAFE_INTEGER, so that product can itself
+  // leave the exactly-representable range. BigInt has neither limit, so there is a single
+  // code path with no boundary to fall off.
+  //
+  // tenths = round-half-up of (checkedIn * 1000) / attendees, computed exactly:
+  //   floor((2·N + D) / (2·D))  with N = checkedIn * 1000, D = attendees
+  //
+  // Both counts are already floored, safe, non-negative integers and checkedIn is clamped
+  // to attendees, so BigInt() is always valid and `tenths` is always an integer in
+  // [0, 1000] — exactly representable as a Number. The result is therefore always a
+  // one-decimal value in [0, 100]: never NaN, never Infinity, never negative, never > 100.
+  const tenths = Number(
+    (BigInt(checkedIn) * 2000n + BigInt(attendees)) / (BigInt(attendees) * 2n),
+  );
+  return tenths / 10;
+}
+
+/**
+ * X4 — the human label the /api/attendance report returns alongside the number.
+ *
+ * Zero attendees => EXACTLY "no attendees yet" (the plan pins that string; nothing is
+ * appended to it). Otherwise the percentage is taken from showUpRatePercent, so the
+ * number and the label physically cannot disagree.
+ */
+export function formatShowUpRate(input: { attendees: number; checkedIn: number }): string {
+  const { attendees, checkedIn } = safeAttendance(input);
+  if (attendees === 0) return NO_ATTENDEES;
+  const percent = showUpRatePercent({ attendees, checkedIn });
+  return `${percent}% showed up (${checkedIn} of ${attendees} checked in)`;
+}
