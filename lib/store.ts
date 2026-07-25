@@ -47,9 +47,15 @@ export async function listEvents(): Promise<EventRow[]> {
   return rows.map(normalizeEventRow);
 }
 
+// events.id is `serial` = int4, so an id outside int4 makes Postgres THROW rather than
+// return zero rows. Anything unstorable is by definition non-existent, so the range is
+// part of the guard: the contract here is row-or-null, never a throw.
+const INT4_MIN = -2147483648;
+const INT4_MAX = 2147483647;
+
 /** null (not a throw) when the id does not exist — callers map that to notFound(). */
 export async function getEvent(id: number): Promise<EventRow | null> {
-  if (!Number.isInteger(id)) return null;
+  if (!Number.isInteger(id) || id < INT4_MIN || id > INT4_MAX) return null;
   const rows = await query<RawEventRow>(
     `select ${COLUMNS} from events where id = $1`,
     [id],
