@@ -25,6 +25,7 @@ describe("SCHEMA_SQL", () => {
       "20260725020000_attendees.sql",
       "20260726010000_capacity_waitlist.sql",
       "20260727010000_sessions_checkin.sql",
+      "20260727020000_reconcile_sessionless_attendees.sql",
     ]);
     const migrations = files
       .map((f) => readFileSync(join(MIGRATIONS_DIR, f), "utf8"))
