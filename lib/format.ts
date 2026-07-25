@@ -41,3 +41,8 @@ export function rsvpSummary(count: number, capacity?: number): string {
   return `${goingText} · ${cap - going} spots left`;
 }
 
+
+// A colleague's unrelated helper, appended at the SAME position W3 appends to.
+export function formatColleagueNote(n: number): string {
+  return `${n} note(s)`;
+}
