@@ -109,10 +109,28 @@ export function isForeignKeyViolation(error: unknown): boolean {
  * actually inserted. Throws on 42P01 — the WRITE path must surface that as a 503, not
  * pretend the RSVP was stored.
  */
-export async function rsvp(eventId: number, name: string): Promise<boolean> {
+export async function rsvp(
+  eventId: number,
+  name: string,
+  // X2 — additive third parameter, defaulted so every existing caller is unchanged. When it
+  // is null the statement below is byte-identical to the pre-X2 one: that is what keeps the
+  // zero-session path working against the CURRENT hosted schema, where attendees.session_id
+  // does not exist yet and naming the column would be a 42703.
+  sessionId: number | null = null,
+): Promise<boolean> {
   if (!Number.isInteger(eventId)) return false;
   const trimmed = name.trim();
   if (trimmed === "") return false;
+  if (sessionId !== null) {
+    const rows = await query<{ id: number }>(
+      `insert into attendees (event_id, name, session_id)
+       values ($1, $2, $3)
+       on conflict do nothing
+       returning id`,
+      [eventId, trimmed, sessionId],
+    );
+    return rows.length > 0;
+  }
   const rows = await query<{ id: number }>(
     `insert into attendees (event_id, name)
      values ($1, $2)
@@ -322,6 +340,184 @@ export async function listSessions(eventId: number): Promise<SessionSummary[]> {
     }));
   } catch (error) {
     if (isUndefinedTable(error) || isUndefinedColumn(error)) return [];
+    throw error;
+  }
+}
+
+// ── X2 — check-in ──────────────────────────────────────────────────────────
+//
+// Additive: nothing above is restructured. Three rules the SQL here encodes, so that no
+// caller can get them wrong:
+//
+//  1. IDEMPOTENT. `checked_in_at = coalesce(a.checked_in_at, now())` — a second check-in
+//     rewrites the column with the value it already holds, so the timestamp NEVER moves
+//     and the route answers 200, not 409. No read-then-write, so two concurrent scans of
+//     the same badge cannot interleave into two different timestamps: the row lock the
+//     UPDATE takes serializes them and the coalesce makes the loser a no-op. (No sequence
+//     number is assigned anywhere in this phase, so no advisory lock is needed.)
+//  2. THE EVENT/SESSION PAIRING IS PART OF THE STATEMENT. The `from sessions s` join means
+//     a session belonging to a DIFFERENT event simply matches no row — it can never touch
+//     an attendee. That is checked in the same statement as the write, so there is no
+//     window between "the session belongs to this event" and "the write lands".
+//  3. Zero rows updated is never an error here — it is a 404, and the route decides which
+//     404 by asking sessionBelongsToEvent() on that path only.
+//
+// EXPAND/CONTRACT: these are WRITE paths against a table+column the hosted database does
+// not have yet, so unlike the reads above they must NOT swallow 42P01/42703 — the route
+// turns those into a 503 ("schema not yet applied") rather than pretending a badge scan
+// was recorded. countCheckedIn is a pure read and degrades to 0 like rsvpCount does.
+
+/** The check-in moment of one attendee, ISO-8601. */
+export type CheckIn = { name: string; checkedInAt: string };
+
+/**
+ * True when `sessionId` is a session OF `eventId`. Used only to choose between two 404
+ * messages after a write matched nothing — never as a pre-flight guard before a write
+ * (that would be exactly the read-then-write race the single-statement writes avoid).
+ * false on the pre-migration schema, where no session belongs to anything.
+ */
+export async function sessionBelongsToEvent(
+  eventId: number,
+  sessionId: number,
+): Promise<boolean> {
+  if (!Number.isInteger(eventId) || !Number.isInteger(sessionId)) return false;
+  if (sessionId < 1 || sessionId > INT4_MAX) return false;
+  try {
+    const rows = await query<{ id: number }>(
+      `select id from sessions where id = $1 and event_id = $2`,
+      [sessionId, eventId],
+    );
+    return rows.length > 0;
+  } catch (error) {
+    if (isUndefinedTable(error) || isUndefinedColumn(error)) return false;
+    throw error;
+  }
+}
+
+/**
+ * The session an attendee of `eventId` is currently assigned to. Like
+ * sessionBelongsToEvent() this is a FAILURE-PATH read only — it tells the route WHY a write
+ * matched nothing (already on another session vs. never RSVPed), and is never used as a
+ * pre-flight guard. `sessionId: null` is the legitimate unassigned case; null means no
+ * attendee of that name. Degrades to null on the pre-migration schema.
+ */
+export async function attendeeSession(
+  eventId: number,
+  name: string,
+): Promise<{ sessionId: number | null } | null> {
+  const trimmed = name.trim();
+  if (!Number.isInteger(eventId) || eventId < INT4_MIN || eventId > INT4_MAX) return null;
+  if (trimmed === "") return null;
+  try {
+    const rows = await query<{ session_id: number | null }>(
+      `select session_id from attendees where event_id = $1 and lower(name) = lower($2)`,
+      [eventId, trimmed],
+    );
+    const row = rows[0];
+    return row ? { sessionId: row.session_id } : null;
+  } catch (error) {
+    if (isUndefinedTable(error) || isUndefinedColumn(error)) return null;
+    throw error;
+  }
+}
+
+/**
+ * Mark an attendee of `eventId` as arrived at `sessionId`, and attach them to that session
+ * ONLY when they carry no session yet (an attendee who RSVPed before the picker existed
+ * carries session_id = null — legal, and a scan at the door is exactly when that becomes
+ * known). Name matching is case-insensitive, matching attendees_event_name_uniq.
+ *
+ * `a.session_id is null or a.session_id = s.id` is what makes that safe: an attendee already
+ * on ANOTHER session of the same event matches no row, so a scan at the wrong door can never
+ * silently move their RSVP — and because it is part of the same statement, two concurrent
+ * scans for two different sessions cannot race into "the later one wins". The DELETE below
+ * clears only checked_in_at, so a reassignment would have been unrecoverable.
+ *
+ * Returns null when nothing matched — the session is not this event's, nobody of that name
+ * RSVPed, or they are on a different session. The route separates those (404 vs 409) with
+ * failure-path reads. Throws 42P01/42703 for the route to map to 503.
+ */
+export async function checkIn(
+  eventId: number,
+  sessionId: number,
+  name: string,
+): Promise<CheckIn | null> {
+  const trimmed = name.trim();
+  if (!Number.isInteger(eventId) || eventId < INT4_MIN || eventId > INT4_MAX) return null;
+  if (!Number.isInteger(sessionId) || sessionId < INT4_MIN || sessionId > INT4_MAX) {
+    return null;
+  }
+  if (trimmed === "") return null;
+  const rows = await query<{ name: string; checked_in_at: Date | string }>(
+    `update attendees a
+        set session_id = s.id,
+            checked_in_at = coalesce(a.checked_in_at, now())
+       from sessions s
+      where s.id = $2
+        and s.event_id = $1
+        and a.event_id = $1
+        and (a.session_id is null or a.session_id = s.id)
+        and lower(a.name) = lower($3)
+    returning a.name, a.checked_in_at`,
+    [eventId, sessionId, trimmed],
+  );
+  const row = rows[0];
+  return row ? { name: row.name, checkedInAt: toIso(row.checked_in_at) } : null;
+}
+
+/**
+ * Undo a check-in — the wrong badge was scanned. Clears checked_in_at and leaves session_id
+ * alone (they are still on that session's list, just not arrived). Only an attendee actually
+ * on `sessionId` can be undone there.
+ *
+ * Idempotent in the same way as checkIn: clearing an already-clear timestamp reports true,
+ * because the requested state ("not checked in") holds. false means nothing matched → 404.
+ */
+export async function undoCheckIn(
+  eventId: number,
+  sessionId: number,
+  name: string,
+): Promise<boolean> {
+  const trimmed = name.trim();
+  if (!Number.isInteger(eventId) || eventId < INT4_MIN || eventId > INT4_MAX) return false;
+  if (!Number.isInteger(sessionId) || sessionId < INT4_MIN || sessionId > INT4_MAX) {
+    return false;
+  }
+  if (trimmed === "") return false;
+  const rows = await query<{ name: string }>(
+    `update attendees a
+        set checked_in_at = null
+       from sessions s
+      where s.id = $2
+        and s.event_id = $1
+        and a.event_id = $1
+        and a.session_id = s.id
+        and lower(a.name) = lower($3)
+    returning a.name`,
+    [eventId, sessionId, trimmed],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * How many attendees of one session have arrived. ONE query, and 0 — never a throw, never a
+ * division — on the pre-migration schema. Session-less attendees are simply not this
+ * session's, so they are neither counted here nor lost: listSessions still reports the
+ * event's totals and X4 owns the event-level rollup.
+ */
+export async function countCheckedIn(sessionId: number): Promise<number> {
+  if (!Number.isInteger(sessionId) || sessionId < 1 || sessionId > INT4_MAX) return 0;
+  try {
+    const rows = await query<{ count: string }>(
+      `select count(*)::text as count
+         from attendees
+        where session_id = $1
+          and checked_in_at is not null`,
+      [sessionId],
+    );
+    return rows[0] ? Number(rows[0].count) : 0;
+  } catch (error) {
+    if (isUndefinedTable(error) || isUndefinedColumn(error)) return 0;
     throw error;
   }
 }

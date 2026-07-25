@@ -3,6 +3,7 @@ import {
   getEvent,
   isForeignKeyViolation,
   isUndefinedTable,
+  listSessions,
   rsvp,
   rsvpCount,
 } from "@/lib/store";
@@ -45,9 +46,32 @@ export async function POST(
       return NextResponse.json({ error: "event not found" }, { status: 404 });
     }
 
+    // X2 — sessionId is CONDITIONALLY REQUIRED, and this is the only place that can decide
+    // it: the rule depends on how many sessions the event has, which the Zod schema cannot
+    // see. listSessions is ONE aggregate query and degrades to [] on the pre-migration
+    // schema, so on the live site (no `sessions` table yet) this evaluates to "zero
+    // sessions" and the existing single-field form keeps working byte-for-byte.
+    const sessions = await listSessions(eventId);
+    if (sessions.length > 0 && parsed.sessionId === undefined) {
+      // NOT merely optional: accepting the omission here would write a session-less
+      // attendee who can never be checked in and whom X4 would undercount.
+      return NextResponse.json(
+        { error: "sessionId is required for an event with sessions" },
+        { status: 400 },
+      );
+    }
+    if (parsed.sessionId !== undefined && !sessions.some((s) => s.id === parsed.sessionId)) {
+      // A session of ANOTHER event (or of no event) is a 404 — the same rule as check-in,
+      // and never a 500 leaking a foreign-key violation.
+      return NextResponse.json(
+        { error: "session not found for this event" },
+        { status: 404 },
+      );
+    }
+
     // ON CONFLICT DO NOTHING: a repeat RSVP (same event, same name, any case) is a
     // no-op that returns the UNCHANGED count — never a 500.
-    const created = await rsvp(eventId, parsed.name);
+    const created = await rsvp(eventId, parsed.name, parsed.sessionId ?? null);
     const count = await rsvpCount(eventId);
     return NextResponse.json({ ok: true, created, count });
   } catch (error) {
