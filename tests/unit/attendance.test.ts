@@ -87,19 +87,21 @@ describe("GET /api/attendance — board shape", () => {
   });
 
   it("keeps the SQL's newest-first event order — the route must not re-sort", async () => {
+    // Ids are deliberately NOT descending, so this fails if the route re-sorts by id:
+    // SQL order is 3, 9, 1 — descending id would be 9, 3, 1.
     mockDb({
       events: [
-        { id: 9, title: "Newest" },
-        { id: 3, title: "Middle" },
+        { id: 3, title: "Newest" },
+        { id: 9, title: "Middle" },
         { id: 1, title: "Oldest" },
       ],
     });
     const { body } = await getReport();
 
-    expect(body.events.map((e: { title: string }) => e.title)).toEqual([
-      "Newest",
-      "Middle",
-      "Oldest",
+    expect(body.events.map((e: { id: number; title: string }) => [e.id, e.title])).toEqual([
+      [3, "Newest"],
+      [9, "Middle"],
+      [1, "Oldest"],
     ]);
     const sql = issuedSql().find((text) => /from events/.test(text));
     expect(sql).toMatch(/order by created_at desc, id desc/i);
@@ -190,16 +192,19 @@ describe("GET /api/attendance — busiest session tiebreak", () => {
   });
 
   it("(b) breaks an attendeeCount tie on the EARLIEST starts_at", async () => {
+    // Deliberately UNSORTED, and the earliest session carries the HIGHEST id: an
+    // implementation that ignored starts_at and broke the tie on the lowest id would pick
+    // id 1 ("Late"), so this case fails unless starts_at really is the tiebreak.
     mockDb({
       events: event,
       sessions: [
-        { id: 5, event_id: 1, title: "Late", starts_at: new Date("2026-08-01T18:00:00Z"), attendee_count: "4" },
-        { id: 4, event_id: 1, title: "Early", starts_at: new Date("2026-08-01T08:00:00Z"), attendee_count: "4" },
+        { id: 1, event_id: 1, title: "Late", starts_at: new Date("2026-08-01T18:00:00Z"), attendee_count: "4" },
+        { id: 9, event_id: 1, title: "Early", starts_at: new Date("2026-08-01T08:00:00Z"), attendee_count: "4" },
         { id: 6, event_id: 1, title: "Mid", starts_at: new Date("2026-08-01T12:00:00Z"), attendee_count: "4" },
       ],
     });
     const { body } = await getReport();
-    expect(body.busiestSession).toMatchObject({ id: 4, title: "Early", attendeeCount: 4 });
+    expect(body.busiestSession).toMatchObject({ id: 9, title: "Early", attendeeCount: 4 });
   });
 
   it("(c) breaks an equal-count, equal-starts_at tie on the LOWEST id", async () => {
@@ -367,6 +372,25 @@ describe("showUpRatePercent / formatShowUpRate", () => {
     expect(showUpRatePercent({ attendees: 3, checkedIn: 1 })).toBe(33.3);
     expect(showUpRatePercent({ attendees: 3, checkedIn: 2 })).toBe(66.7);
     expect(showUpRatePercent({ attendees: 7, checkedIn: 7 })).toBe(100);
+    expect(showUpRatePercent({ attendees: 7, checkedIn: 1 })).toBe(14.3);
+    expect(showUpRatePercent({ attendees: 200, checkedIn: 1 })).toBe(0.5);
+  });
+
+  it("rounds EXACT half-tenths up — the ×1000 must not ride on a float quotient", () => {
+    // Each of these lands exactly on a half-tenth. Scaling the quotient instead of the
+    // integer numerator loses that: (1001 / 2000) * 1000 is 500.49999999999994, which
+    // rounds DOWN to 50 instead of 50.1. The label must carry the same number.
+    expect(showUpRatePercent({ attendees: 2000, checkedIn: 1001 })).toBe(50.1);
+    expect(formatShowUpRate({ attendees: 2000, checkedIn: 1001 })).toContain("50.1%");
+
+    expect(showUpRatePercent({ attendees: 400, checkedIn: 201 })).toBe(50.3);
+    expect(formatShowUpRate({ attendees: 400, checkedIn: 201 })).toContain("50.3%");
+
+    expect(showUpRatePercent({ attendees: 800, checkedIn: 406 })).toBe(50.8);
+    expect(formatShowUpRate({ attendees: 800, checkedIn: 406 })).toContain("50.8%");
+
+    // The neighbouring non-boundary ratio is unchanged.
+    expect(showUpRatePercent({ attendees: 2000, checkedIn: 999 })).toBe(50);
   });
 
   it("clamps checkedIn to attendees — arrivals cannot exceed the roll", () => {

@@ -157,7 +157,20 @@ export function showUpRatePercent(input: { attendees: number; checkedIn: number 
   if (attendees === 0) return 0;
   // ×1000 / 10 rather than toFixed(1): this returns a NUMBER, and the endpoint pins
   // showUpRate as a number.
-  return Math.round((checkedIn / attendees) * 1000) / 10;
+  //
+  // The ×1000 is applied to the INTEGER numerator, not to the quotient: a float quotient
+  // loses exact half-tenths, so `(1001 / 2000) * 1000` is 500.49999999999994 and rounds
+  // DOWN to 50 instead of 50.1. `(checkedIn * 1000) / attendees` divides an exact integer
+  // and lands on 500.5, which rounds to the required 50.1.
+  //
+  // safeCount permits counts up to MAX_SAFE_INTEGER, so `checkedIn * 1000` can itself leave
+  // the exactly-representable range; in that (pathological) case fall back to the quotient
+  // form. Either way the clamp above bounds the ratio to [0, 1], so the result is still
+  // never NaN, Infinity, negative or greater than 100.
+  const scaled = checkedIn * 1000;
+  return Number.isSafeInteger(scaled)
+    ? Math.round(scaled / attendees) / 10
+    : Math.round((checkedIn / attendees) * 1000) / 10;
 }
 
 /**
