@@ -37,20 +37,52 @@ export const eventInput = z.object({
 
 export type EventInput = z.infer<typeof eventInput>;
 
+// The attendee-name rule, extracted so the RSVP body and the X2 check-in body cannot
+// drift apart: one definition, same trim/length/NUL guarantees on every write path.
+const attendeeName = z
+  .string()
+  .trim()
+  .min(1, "name is required")
+  .max(120, "name must be 120 characters or fewer")
+  .refine(noNulByte, `name ${NUL_MESSAGE}`);
+
+// sessions.id is a `serial` (int4). An id outside that range makes Postgres raise 22003
+// — a 500 where the contract promises a 4xx — so the range is part of the schema, exactly
+// as the route-level id guard is for events.
+const SESSION_ID_MAX = 2147483647;
+const sessionId = z
+  .number()
+  .int("sessionId must be an integer")
+  .min(1, "sessionId must be a positive integer")
+  .max(SESSION_ID_MAX, "sessionId must be a positive integer");
+
 // Server-side validation for RSVP input, sharing the event guards above so the RSVP
 // route cannot drift back into 500ing on a NUL byte. .strict(): an unknown key is a 400.
+//
+// X2: `sessionId` is OPTIONAL HERE and CONDITIONALLY REQUIRED at the route. The rule
+// ("required once the event has any session, accepted-as-absent only when it has none")
+// depends on the event's session count, which is a database fact this schema cannot see.
+// The schema pins the SHAPE; app/api/events/[id]/rsvp/route.ts enforces the condition.
 export const rsvpInput = z
   .object({
-    name: z
-      .string()
-      .trim()
-      .min(1, "name is required")
-      .max(120, "name must be 120 characters or fewer")
-      .refine(noNulByte, `name ${NUL_MESSAGE}`),
+    name: attendeeName,
+    sessionId: sessionId.optional(),
   })
   .strict();
 
 export type RsvpInput = z.infer<typeof rsvpInput>;
+
+// X2 — check-in body: the attendee, and the session they are arriving at. Both POST
+// (arrive) and DELETE (undo — the badge was scanned by mistake) take this same shape, so
+// the two halves of the endpoint cannot validate differently. .strict() like rsvpInput.
+export const checkInInput = z
+  .object({
+    name: attendeeName,
+    sessionId,
+  })
+  .strict();
+
+export type CheckInInput = z.infer<typeof checkInInput>;
 
 export type ParseResult =
   | { ok: true; data: EventInput }

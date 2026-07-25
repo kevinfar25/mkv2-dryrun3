@@ -13,20 +13,38 @@ export type RsvpFormProps = {
   /**
    * X1 plumbing — the event's sessions, already aggregated by listSessions and passed down by
    * the server page. OPTIONAL so any caller that has not been updated still type-checks.
-   * Accepted and rendered NOWHERE yet: X2 owns the picker UI that consumes it. Keeping the
-   * prop here means X2 never has to touch app/events/[id]/page.tsx (X3's file).
+   * X2 renders the picker below when this is non-empty. Consuming the prop HERE is what means
+   * X2 never has to touch app/events/[id]/page.tsx (X3's file).
    */
   sessions?: SessionSummary[];
 };
 
 export default function RsvpForm({ eventId, sessions }: RsvpFormProps) {
-  // Referenced, not rendered — the prop is part of the contract now; X2 replaces this line
-  // with the picker. `void` keeps the no-unused-vars rule honest without inventing markup.
-  void sessions;
+  // An event with NO sessions keeps the single-field form exactly as it was: no <select>,
+  // and no sessionId key in the body (rsvpInput is .strict(), and the server accepts the
+  // omission only for a zero-session event).
+  const sessionList = sessions ?? [];
+  const hasSessions = sessionList.length > 0;
   const router = useRouter();
   const [name, setName] = useState("");
+  // Default to the first session — the list is ordered starts_at, title, id, so that is the
+  // one the door is most likely scanning. Stored as a string: <select> values always are.
+  const [sessionId, setSessionId] = useState(
+    hasSessions ? String(sessionList[0].id) : "",
+  );
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  // Derived, not stored: router.refresh() can hand this component a NEW session list (X3's
+  // schedule, or the migration finally being applied), and a stale selected id would then
+  // POST a session this event no longer has. Falling back to the first session keeps the
+  // rendered value and the submitted value the same thing.
+  const selected =
+    hasSessions && sessionList.some((s) => String(s.id) === sessionId)
+      ? sessionId
+      : hasSessions
+        ? String(sessionList[0].id)
+        : "";
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -36,7 +54,9 @@ export default function RsvpForm({ eventId, sessions }: RsvpFormProps) {
       const res = await fetch(`/api/events/${eventId}/rsvp`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name }),
+        // The key is present ONLY when the event has sessions: rsvpInput is .strict(), so
+        // sending sessionId: undefined-turned-null to a zero-session event would be a 400.
+        body: JSON.stringify(hasSessions ? { name, sessionId: Number(selected) } : { name }),
       });
       const body = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok) {
@@ -65,6 +85,24 @@ export default function RsvpForm({ eventId, sessions }: RsvpFormProps) {
         placeholder="Ada Lovelace"
         data-testid="rsvp-name"
       />{" "}
+      {hasSessions ? (
+        <>
+          <label htmlFor="rsvp-session">Session</label>{" "}
+          <select
+            id="rsvp-session"
+            name="sessionId"
+            value={selected}
+            onChange={(e) => setSessionId(e.target.value)}
+            data-testid="rsvp-session"
+          >
+            {sessionList.map((session) => (
+              <option key={session.id} value={session.id}>
+                {session.room ? `${session.title} — ${session.room}` : session.title}
+              </option>
+            ))}
+          </select>{" "}
+        </>
+      ) : null}
       <button type="submit" disabled={pending} data-testid="rsvp-submit">
         {pending ? "RSVPing…" : "RSVP"}
       </button>
