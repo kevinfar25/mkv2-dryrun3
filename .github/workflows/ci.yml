@@ -39,7 +39,6 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
-    if: ${{ contains(github.head_ref, 'never-matches-this') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
