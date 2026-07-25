@@ -11,7 +11,9 @@ vi.mock("@/lib/db", () => ({
   withTransaction: vi.fn(),
 }));
 
-const { listAttendees, UNDEFINED_TABLE } = await import("../../lib/store");
+const { listAttendees, UNDEFINED_TABLE, ATTENDEE_PAGE_LIMIT } = await import(
+  "../../lib/store"
+);
 
 /** What node-postgres actually raises: an Error carrying a `code` string. */
 function pgError(code: string): Error {
@@ -46,7 +48,33 @@ describe("listAttendees", () => {
     expect(sql).toMatch(/where event_id = \$1/i);
     // The id is bound, never interpolated — no string-concatenated SQL.
     expect(sql).not.toContain("42");
-    expect(params).toEqual([42]);
+    expect(params).toEqual([42, ATTENDEE_PAGE_LIMIT]);
+  });
+
+  it("caps the row count IN SQL with a bound limit — default is ATTENDEE_PAGE_LIMIT", async () => {
+    query.mockResolvedValue([]);
+    await listAttendees(7);
+
+    const [sql, params] = query.mock.calls[0];
+    // The bound is a placeholder, NOT string-interpolated into the SQL text.
+    expect(sql).toMatch(/limit \$2/i);
+    expect(sql).not.toMatch(/limit\s+\d/i);
+    expect(ATTENDEE_PAGE_LIMIT).toBe(200);
+    expect(params).toEqual([7, 200]);
+  });
+
+  it("honours a smaller explicit limit but never exceeds the cap", async () => {
+    query.mockResolvedValue([]);
+
+    await listAttendees(7, 5);
+    expect(query.mock.calls[0][1]).toEqual([7, 5]);
+
+    // Above the cap, at the cap, and nonsense values all clamp to ATTENDEE_PAGE_LIMIT.
+    for (const bad of [10_000, 0, -1, 1.5, Number.NaN]) {
+      query.mockClear();
+      await listAttendees(7, bad);
+      expect(query.mock.calls[0][1]).toEqual([7, ATTENDEE_PAGE_LIMIT]);
+    }
   });
 
   it("normalizes created_at Date objects to ISO strings", async () => {
